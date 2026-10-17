@@ -1,0 +1,44 @@
+{
+  "schema": "tool/v1",
+  "name": "install-vendir",
+  "summary": "Use when a repository needs the pinned, checksum-verified vendir binary",
+  "intents": [
+    "install vendir",
+    "download pinned vendir",
+    "vendir binary for ci",
+    "carvel vendir setup",
+    "verify vendir checksum"
+  ],
+  "kind": "script",
+  "scope": "global",
+  "entry": "install-vendir",
+  "language": "bash",
+  "side_effects": "write-local",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "installed, or dry run printed",
+    "1": "no pinned build for this platform, download failed or checksum mismatch",
+    "2": "usage error",
+    "3": "curl missing"
+  },
+  "platforms": [
+    "darwin-arm64",
+    "linux-amd64"
+  ],
+  "requires": [
+    "curl",
+    "uname"
+  ],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-18",
+    "builder": "claude-opus-5-5",
+    "task": "rice-kb:.scratch/agent-ecosystem-v1/issues/08-cross-project-duplication-scan.md",
+    "promoted_from": "rice-catalog/scripts/install-vendir.sh (byte-identical in rice-contracts, rice-edit, rice-index, rice-observe and rice-release; a variant in rice-review)"
+  },
+  "replaces": [
+    "releases/download/[^ ]*/vendir-(darwin|linux|windows)",
+    "carvel-dev/vendir/releases"
+  ]
+}

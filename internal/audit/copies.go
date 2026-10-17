@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -82,9 +83,46 @@ func censusCopies(tools []*manifest.Tool, roots []string, source string) copyCen
 	seenFile := map[string]bool{}
 	visited := 0
 	truncated := false
+	// consider counts one regular file named like a tool, once per absolute path.
+	consider := func(abs string, idx []int) {
+		if seenFile[abs] {
+			return
+		}
+		seenFile[abs] = true
+		h := fileHash(abs)
+		if h == "" {
+			return
+		}
+		for _, i := range idx {
+			if abs == canonPath[i] {
+				continue
+			}
+			hashes[i][h]++
+		}
+	}
 	for _, root := range roots {
 		if truncated {
 			break
+		}
+		// In a Git work tree only tracked files count, so untracked agent working copies
+		// (.scratch state, harness worktrees) and ignored trees are not reported as copies.
+		if files, ok := trackedFiles(root); ok {
+			for _, abs := range files {
+				visited++
+				if visited > maxWalkEntries {
+					truncated = true
+					break
+				}
+				idx, named := byName[filepath.Base(abs)]
+				if !named || inSkipDir(root, abs) {
+					continue
+				}
+				if fi, err := os.Lstat(abs); err != nil || !fi.Mode().IsRegular() {
+					continue
+				}
+				consider(abs, idx)
+			}
+			continue
 		}
 		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -109,20 +147,10 @@ func censusCopies(tools []*manifest.Tool, roots []string, source string) copyCen
 				return nil
 			}
 			abs, err := filepath.Abs(p)
-			if err != nil || seenFile[abs] {
+			if err != nil {
 				return nil
 			}
-			seenFile[abs] = true
-			h := fileHash(abs)
-			if h == "" {
-				return nil
-			}
-			for _, i := range idx {
-				if abs == canonPath[i] {
-					continue
-				}
-				hashes[i][h]++
-			}
+			consider(abs, idx)
 			return nil
 		})
 	}
@@ -176,4 +204,38 @@ func copyRoots(repos []string, home string) ([]string, string) {
 		}
 	}
 	return out, "fallback ~/workspace/*/scripts"
+}
+
+// trackedFiles lists the absolute paths Git tracks under root. ok is false when root is not inside a
+// Git work tree, and the caller walks the directory instead.
+func trackedFiles(root string) ([]string, bool) {
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	if err != nil {
+		return nil, false
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false
+	}
+	var files []string
+	for _, f := range strings.Split(string(out), "\x00") {
+		if f != "" {
+			files = append(files, filepath.Join(abs, f))
+		}
+	}
+	return files, true
+}
+
+// inSkipDir reports whether a path below root passes through a directory in skipDirs.
+func inSkipDir(root, abs string) bool {
+	rel, err := filepath.Rel(root, filepath.Dir(abs))
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if skipDirs[part] {
+			return true
+		}
+	}
+	return false
 }

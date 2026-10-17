@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# install-vendir: download the pinned Carvel vendir release for this OS and architecture into DEST
+# and verify its SHA-256 against the values pinned below (from the release's checksums.txt).
+# Promoted from the Rice repositories' scripts/install-vendir.sh, which six of them carried
+# byte-identically; callers keep invoking it as `install-vendir.sh DEST`. Nothing is installed
+# system-wide.
+set -euo pipefail
+
+VERSION=v0.46.2
+SHA_DARWIN_ARM64=dd77c509214e3a7114d30de4b9a94ba09cdcb84230244589db10448d8c744662
+SHA_DARWIN_AMD64=92160571582d04e1da66a15e476d4f63b6ca894593c6b126b0d53bea8da0f58b
+SHA_LINUX_AMD64=0b4bad28b765c4cbf0cc2234d0d420bcf2d352b58eb202e9c55263374f95bd71
+SHA_LINUX_ARM64=bb0574c3aff6a5ae99801ceb3d63893917f763908700883bc1fbbcfed2ab6c9b
+SHA_WINDOWS_AMD64=19782987d7e66dd4a334dc740d6e96fce2f87667da5f155bcf898151ae349570
+
+usage() {
+  cat <<EOF
+Usage: install-vendir [--dry-run] DEST
+
+Download vendir $VERSION for this OS and architecture to DEST, verify its pinned SHA-256, make it
+executable and print its version. DEST's directory is created when missing.
+
+Options:
+  --dry-run   print the asset, URL and pinned checksum; download and write nothing
+  -h, --help  show this help
+
+Exit codes:
+  0  installed (or dry run printed)
+  1  no pinned build for this platform, download failed or checksum mismatch
+  2  usage error
+  3  curl missing
+
+Example:
+  install-vendir "\$HOME/.local/share/vendir/vendir"
+EOF
+}
+
+dry_run=0
+dest=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --dry-run) dry_run=1 ;;
+  --)
+    shift
+    break
+    ;;
+  -*)
+    echo "install-vendir: unknown option $1; see --help" >&2
+    exit 2
+    ;;
+  *)
+    if [ -n "$dest" ]; then
+      echo "install-vendir: one DEST only; see --help" >&2
+      exit 2
+    fi
+    dest="$1"
+    ;;
+  esac
+  shift
+done
+if [ -z "$dest" ] && [ "$#" -gt 0 ]; then dest="$1"; fi
+if [ -z "$dest" ]; then
+  echo "install-vendir: DEST is required; see --help" >&2
+  exit 2
+fi
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d" " -f1; else shasum -a 256 "$1" | cut -d" " -f1; fi
+}
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+case "$arch" in x86_64 | amd64) arch=amd64 ;; arm64 | aarch64) arch=arm64 ;; esac
+case "$os-$arch" in
+darwin-arm64) asset=vendir-darwin-arm64 want=$SHA_DARWIN_ARM64 ;;
+darwin-amd64) asset=vendir-darwin-amd64 want=$SHA_DARWIN_AMD64 ;;
+linux-amd64) asset=vendir-linux-amd64 want=$SHA_LINUX_AMD64 ;;
+linux-arm64) asset=vendir-linux-arm64 want=$SHA_LINUX_ARM64 ;;
+mingw* | msys* | cygwin*) asset=vendir-windows-amd64.exe want=$SHA_WINDOWS_AMD64 ;;
+*)
+  echo "install-vendir: no pinned vendir for $os-$arch" >&2
+  exit 1
+  ;;
+esac
+url="https://github.com/carvel-dev/vendir/releases/download/$VERSION/$asset"
+
+if [ "$dry_run" -eq 1 ]; then
+  printf 'asset %s\nurl %s\nsha256 %s\ndest %s\n' "$asset" "$url" "$want" "$dest"
+  exit 0
+fi
+command -v curl >/dev/null 2>&1 || {
+  echo "install-vendir: curl is required" >&2
+  exit 3
+}
+
+mkdir -p "$(dirname "$dest")"
+tmp="$(mktemp "${dest}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+if ! curl -fsSL --retry 3 -o "$tmp" "$url"; then
+  echo "install-vendir: download failed: $url" >&2
+  exit 1
+fi
+got="$(sha256_of "$tmp")"
+if [ "$got" != "$want" ]; then
+  echo "install-vendir: checksum mismatch for $asset: got $got, want $want" >&2
+  exit 1
+fi
+chmod +x "$tmp"
+mv "$tmp" "$dest"
+trap - EXIT
+"$dest" version
