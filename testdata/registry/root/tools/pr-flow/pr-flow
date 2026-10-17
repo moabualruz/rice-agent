@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fixture entry for the registry tests.
+set -euo pipefail
+case "${1:-}" in
+  -h|--help)
+    echo "Usage: pr-flow [options]"
+    echo "Fixture tool for agent-dry registry tests."
+    echo "Exit codes: 0 ok, 2 usage"
+    exit 0
+    ;;
+esac
+exit 0

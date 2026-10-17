@@ -1,4 +1,65 @@
 {
   "schema": "wanted/v1",
-  "families": []
+  "families": [
+    {
+      "family": "command-preflight-notes",
+      "intents": [
+        "why was my command blocked",
+        "hook denied command",
+        "command preflight check",
+        "agent-gates rule text",
+        "check command against hook rules",
+        "avoid hook denial"
+      ],
+      "evidence": "177 hook denials re-learned in each session (2026-09-15 to 2026-10-17); feed agent-gates rule texts into find results",
+      "research": "rice-kb:docs/research/agent-dry-local-evidence-20261017.md",
+      "suggested_name": "preflight-notes",
+      "suggested_kind": "script"
+    },
+    {
+      "family": "node-environment-shim",
+      "intents": [
+        "source nvm before node",
+        "load node version with nvm",
+        "node not found on path",
+        "run npm with the project node version",
+        "explicit node binary path",
+        "nvm use"
+      ],
+      "evidence": "653 `source ~/.nvm/nvm.sh` commands and 513 explicit node paths (2026-09-15 to 2026-10-17)",
+      "research": "rice-kb:docs/research/agent-dry-local-evidence-20261017.md",
+      "suggested_name": "node-env",
+      "suggested_kind": "script"
+    },
+    {
+      "family": "named-jq-filters",
+      "intents": [
+        "jq filter for gh output",
+        "extract gh run ids",
+        "decode gh api contents",
+        "extract transcript text with jq",
+        "parse claude transcript jsonl",
+        "reusable jq program"
+      ],
+      "evidence": "3,364 jq programs, 64 percent unique (2026-09-15 to 2026-10-17): gh run ids, contents, transcript text",
+      "research": "rice-kb:docs/research/agent-dry-local-evidence-20261017.md",
+      "suggested_name": "jq-filters",
+      "suggested_kind": "script"
+    },
+    {
+      "family": "goal-guard-and-herdr-wrappers",
+      "intents": [
+        "goal progress guard check",
+        "admit goal action",
+        "record goal turn",
+        "goal ledger",
+        "run command in herdr pane",
+        "read herdr pane output"
+      ],
+      "evidence": "66 goal-guard and 102 herdr commands per session where used (2026-09-15 to 2026-10-17); thin argument assembly",
+      "research": "rice-kb:docs/research/agent-dry-local-evidence-20261017.md",
+      "suggested_name": "harness-run",
+      "suggested_kind": "script"
+    }
+  ]
 }

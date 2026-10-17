@@ -1,0 +1,21 @@
+{
+  "schema": "wanted/v1",
+  "families": [
+    {
+      "family": "node-environment-shim",
+      "intents": ["source nvm before node", "load node version with nvm", "node not found on path"],
+      "evidence": "fixture: repeated nvm sourcing",
+      "research": "fixture",
+      "suggested_name": "node-env",
+      "suggested_kind": "script"
+    },
+    {
+      "family": "named-jq-filters",
+      "intents": ["jq filter for gh output", "extract gh run ids", "parse transcript text with jq"],
+      "evidence": "fixture: repeated jq programs",
+      "research": "fixture",
+      "suggested_name": "jq-filters",
+      "suggested_kind": "script"
+    }
+  ]
+}

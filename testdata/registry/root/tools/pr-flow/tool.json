@@ -1,0 +1,19 @@
+{
+  "schema": "tool/v1",
+  "name": "pr-flow",
+  "summary": "Use when a PR needs status, checks or landing. Wraps gh with explicit repo.",
+  "intents": ["watch pr checks", "land pull request", "pr status", "read failed ci log"],
+  "tags": ["github"],
+  "kind": "cli",
+  "scope": "global",
+  "entry": "pr-flow",
+  "language": "bash",
+  "side_effects": "remote-write",
+  "dry_run": "--dry-run",
+  "exit_codes": {"0": "done", "1": "checks failed", "2": "usage error", "3": "gh missing"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["gh"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "registry fixture"}
+}

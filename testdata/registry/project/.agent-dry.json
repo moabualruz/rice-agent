@@ -1,0 +1,8 @@
+[
+  {
+    "name": "seed-demo-data",
+    "summary": "Load demo fixtures into the local database.",
+    "intents": ["seed demo data", "load sample records"],
+    "entry": "just seed"
+  }
+]

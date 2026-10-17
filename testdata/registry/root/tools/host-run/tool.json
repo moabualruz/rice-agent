@@ -1,0 +1,20 @@
+{
+  "schema": "tool/v1",
+  "name": "host-run",
+  "summary": "Use when running commands on a remote host over SSH. Fish-safe, bounded.",
+  "intents": ["ssh to mkh-pc", "run command on remote host", "ssh run script on server", "remote bash over ssh"],
+  "tags": ["ssh", "remote"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "host-run",
+  "language": "bash",
+  "side_effects": "remote-write",
+  "dry_run": "--dry-run",
+  "exit_codes": {"0": "remote command succeeded", "1": "remote command failed", "2": "usage error", "3": "host unreachable or not configured"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["ssh"],
+  "config": ["hosts"],
+  "test": "bash test.sh",
+  "status": "active",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "registry fixture"}
+}

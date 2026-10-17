@@ -1,0 +1,8 @@
+{
+  "name": "fixture-project",
+  "private": true,
+  "scripts": {
+    "lint:css": "stylelint 'src/**/*.css'",
+    "test": "vitest run"
+  }
+}

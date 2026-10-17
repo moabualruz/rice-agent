@@ -1,0 +1,16 @@
+set shell := ["bash", "-cu"]
+
+# Build the fixture binary for release.
+build:
+    echo build
+
+# Run the database migration against staging.
+migrate env="staging":
+    echo migrate {{env}}
+
+_hidden:
+    echo hidden
+
+[private]
+secret-step:
+    echo private

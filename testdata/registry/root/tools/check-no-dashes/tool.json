@@ -1,0 +1,17 @@
+{
+  "schema": "tool/v1",
+  "name": "check-no-dashes",
+  "summary": "Use when a change may add em or en dashes. Scans files or staged lines.",
+  "intents": ["scan for em dash", "check no dashes", "find en dash in files", "reject unicode dashes before commit"],
+  "tags": ["policy", "lint"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "check-no-dashes",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "no dash found", "1": "a dash was found", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "registry fixture"}
+}

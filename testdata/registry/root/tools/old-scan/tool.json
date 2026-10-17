@@ -1,0 +1,17 @@
+{
+  "schema": "tool/v1",
+  "name": "old-scan",
+  "summary": "Use when scanning for em dash characters the old way. Retired.",
+  "intents": ["scan for em dash", "legacy dash scan", "old dash checker"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "old-scan",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "clean", "1": "dash found"},
+  "platforms": ["darwin-arm64"],
+  "test": "bash test.sh",
+  "status": "retired",
+  "superseded_by": "check-no-dashes",
+  "origin": {"date": "2026-10-01", "builder": "fixture", "task": "registry fixture"}
+}
