@@ -1,0 +1,44 @@
+{
+  "schema": "tool/v1",
+  "name": "check-no-dashes",
+  "summary": "Use when checking staged changes, a commit range or the tree for em/en dashes",
+  "intents": [
+    "check for em dash",
+    "scan for en dash",
+    "no dashes gate",
+    "dash check staged files",
+    "dash check commit range",
+    "check tracked files for dashes",
+    "find em or en dash in repo",
+    "pre-commit dash check",
+    "rg for U+2014 or U+2013"
+  ],
+  "tags": ["git", "lint", "pre-commit", "ci", "text"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "check-no-dashes",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {
+    "0": "no em or en dash found",
+    "1": "dash found, or a Git command failed (fails closed; code kept from the promoted variants)",
+    "2": "usage error",
+    "3": "git or awk is not installed"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["git >= 2.28", "awk"],
+  "test": "bash test.sh",
+  "replaces": [
+    "(?i)\\b(?:rg|[ef]?grep)\\b.*\\\\(?:[xu]\\{0*201[34]\\}|u201[34]|U0000201[34])",
+    "(?i)\\b(?:rg|[ef]?grep)\\b.*(?:\\\\xe2\\\\x80(?:\\\\x9[34]|\\[)|\\\\342\\\\200(?:\\\\22[34]|\\[))",
+    "(?i)\\b(?:rg|[ef]?grep)\\b.*U\\+201[34]",
+    "\\b(?:rg|[ef]?grep)\\b.*[\\x{2013}\\x{2014}]"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "rice-kb:.scratch/agent-dry-v1/issues/07-canonical-check-no-dashes-and-reconciliation.md",
+    "promoted_from": "rice-guidance/scripts/check-no-dashes.sh plus variants"
+  }
+}

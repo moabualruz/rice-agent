@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# check-no-dashes: reject em dash (U+2014) and en dash (U+2013).
+#
+# Canonical home: agent-dry tools/check-no-dashes. Repositories vendor this file unchanged as
+# scripts/check-no-dashes.sh; nothing here depends on the file name or location.
+#
+# Union of the earlier variants: staged added lines by default (pre-commit), added lines in a
+# commit range (CI), and every tracked file with --tree. Only added lines are checked in the
+# staged and range modes, so dashes that predate the rule never block an unrelated change.
+# Every Git failure fails closed.
+#
+# The glyphs are built from byte escapes (em = e2 80 94, en = e2 80 93) so this file never
+# contains the literal characters and does not trip its own check.
+set -euo pipefail
+
+PROG="${0##*/}"
+EM="$(printf '\342\200\224')"
+EN="$(printf '\342\200\223')"
+MAX_TEXT=300
+export LC_ALL=C
+
+usage() {
+  cat <<EOF
+Usage: $PROG [--tree | RANGE] [--limit N]
+
+Reject em dash (U+2014) and en dash (U+2013) characters in a Git repository. Scans the
+whole repository from any subdirectory. Files Git treats as binary are skipped.
+
+Modes:
+  (no argument)  added lines in the staged changes (git diff --cached); for a pre-commit hook
+  RANGE          added lines in a commit range, for CI: BASE...HEAD, A..B, or
+                 "\$(git hash-object -t tree /dev/null)..HEAD" for every line at HEAD
+  --tree         every line of every tracked file in the working tree
+
+Options:
+  --limit N      print at most N findings (default 100; 0 prints all); the total is always reported
+  -h, --help     print this help and exit
+
+Output:
+  Findings ("no-dashes: path:line: text", glyphs shown as <EM-DASH> and <EN-DASH>), the
+  summary and every error go to stderr. The clean message goes to stdout.
+
+Exit codes:
+  0  no em or en dash found
+  1  dash found, or a Git command failed (fails closed)
+  2  usage error
+  3  git or awk is not installed
+
+Example:
+  $PROG "\$(git merge-base HEAD origin/main)...HEAD"
+EOF
+}
+
+usage_error() {
+  echo "no-dashes: $1" >&2
+  echo "Run '$PROG --help' for usage." >&2
+  exit 2
+}
+
+# One awk program for both input shapes. mode=diff reads "git diff -U0" output and reports
+# added lines; mode=grep reads "git grep -n" output (path:line:text) and reports every line.
+# shellcheck disable=SC2016 # awk program, not shell
+SCAN_AWK='
+function show(f, n, text) {
+  bad += 1
+  if (limit > 0 && bad > limit) return
+  gsub(em, "<EM-DASH>", text)
+  gsub(en, "<EN-DASH>", text)
+  if (length(text) > maxtext) text = substr(text, 1, maxtext) "..."
+  printf "no-dashes: %s:%s: %s\n", f, n, text
+}
+BEGIN { bad = 0; file = "?"; in_hunk = 0; lineno = 0 }
+mode == "grep" {
+  if (match($0, /:[0-9]+:/)) {
+    show(substr($0, 1, RSTART - 1), substr($0, RSTART + 1, RLENGTH - 2), substr($0, RSTART + RLENGTH))
+  } else {
+    show("?", 0, $0)
+  }
+  next
+}
+# A "+++ " line is a file header only before the first hunk of that file. Inside a hunk it is
+# an added line whose text starts with "++ ", and skipping it would hide a dash on that line.
+# "diff --git" is the one marker that reliably starts the headers of the next file.
+/^diff --git / { in_hunk = 0; next }
+/^\+\+\+ / && !in_hunk {
+  file = substr($0, 5)
+  sub(/\t$/, "", file)
+  if (file ~ /^".*"$/) file = substr(file, 2, length(file) - 2)
+  sub(/^b\//, "", file)
+  next
+}
+/^@@/ {
+  in_hunk = 1
+  hunk = $0
+  sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", hunk)
+  sub(/[ ,].*$/, "", hunk)
+  lineno = hunk + 0
+  next
+}
+/^\+/ {
+  if (index($0, em) > 0 || index($0, en) > 0) show(file, lineno, substr($0, 2))
+  lineno += 1
+  next
+}
+END {
+  if (bad == 0) exit 0
+  if (limit > 0 && bad > limit) printf "no-dashes: %d more not shown (--limit %d; 0 shows all)\n", bad - limit, limit
+  printf "no-dashes: %d %s contain em/en dashes; use - , ; : or parentheses\n", bad, what
+  exit 1
+}
+'
+
+scan() { # mode, noun for the summary; reads stdin, reports to stderr
+  awk -v mode="$1" -v what="$2" -v em="$EM" -v en="$EN" -v limit="$LIMIT" -v maxtext="$MAX_TEXT" \
+    "$SCAN_AWK" >&2
+}
+
+# Explicit flags and -c overrides keep user or repository Git configuration (external diff,
+# textconv, diff.relative, prefixes, colour, grep columns) from changing what is scanned.
+scan_diff() { # label for errors, then git diff arguments
+  local label="$1"
+  shift
+  local -a st
+  set +e
+  git -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --no-relative \
+    --src-prefix=a/ --dst-prefix=b/ -U0 --diff-filter=ACMR "$@" -- | scan diff "added line(s)"
+  st=("${PIPESTATUS[@]}")
+  set -e
+  if [ "${st[0]}" -ne 0 ]; then
+    echo "no-dashes: $label failed; failing closed" >&2
+    exit 1
+  fi
+  case "${st[1]}" in
+    0) ;;
+    1) exit 1 ;;
+    *) echo "no-dashes: scanner failed (awk exit ${st[1]}); failing closed" >&2; exit 1 ;;
+  esac
+}
+
+scan_tree() {
+  local top
+  local -a st
+  if ! top="$(git rev-parse --show-toplevel)"; then
+    echo "no-dashes: git rev-parse --show-toplevel failed (not a work tree?); failing closed" >&2
+    exit 1
+  fi
+  cd "$top" || { echo "no-dashes: cannot enter the work tree; failing closed" >&2; exit 1; }
+  set +e
+  git -c core.quotePath=false -c grep.column=false -c grep.fullName=false \
+    -c grep.fallbackToNoIndex=false grep --no-color -I -n -F -e "$EM" -e "$EN" -- \
+    | scan grep "line(s) in tracked files"
+  st=("${PIPESTATUS[@]}")
+  set -e
+  case "${st[0]}" in
+    0) exit 1 ;;
+    1) ;;
+    *) echo "no-dashes: git grep failed (exit ${st[0]}); failing closed" >&2; exit 1 ;;
+  esac
+  case "${st[1]}" in
+    0) ;;
+    1) exit 1 ;;
+    *) echo "no-dashes: scanner failed (awk exit ${st[1]}); failing closed" >&2; exit 1 ;;
+  esac
+}
+
+TREE=0
+RANGE=""
+HAVE_RANGE=0
+LIMIT=100
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h | --help) usage; exit 0 ;;
+    --tree) TREE=1 ;;
+    --limit)
+      [ "$#" -ge 2 ] || usage_error "--limit needs a number"
+      LIMIT="$2"
+      shift
+      ;;
+    --limit=*) LIMIT="${1#--limit=}" ;;
+    -*) usage_error "unknown option: $1" ;;
+    *)
+      [ "$HAVE_RANGE" -eq 0 ] || usage_error "at most one RANGE: $1"
+      RANGE="$1"
+      HAVE_RANGE=1
+      ;;
+  esac
+  shift
+done
+
+case "$LIMIT" in
+  '' | *[!0-9]*) usage_error "--limit needs a non-negative integer, got '$LIMIT'" ;;
+esac
+if [ "$HAVE_RANGE" -eq 1 ]; then
+  [ "$TREE" -eq 0 ] || usage_error "--tree takes no RANGE"
+  # An empty RANGE or an empty endpoint ("...HEAD", "BASE..") is almost always a failed
+  # command substitution; git would diff nothing and pass, so refuse it.
+  case "$RANGE" in
+    '') usage_error "RANGE is empty" ;;
+    ..* | *..) usage_error "RANGE '$RANGE' has an empty endpoint" ;;
+  esac
+fi
+
+for dep in git awk; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "no-dashes: $dep not found on PATH" >&2; exit 3; }
+done
+
+if [ "$TREE" -eq 1 ]; then
+  scan_tree
+  echo "no-dashes: tree clean"
+elif [ "$HAVE_RANGE" -eq 1 ]; then
+  scan_diff "git diff ${RANGE}" "$RANGE"
+  echo "no-dashes: additions clean (${RANGE})"
+else
+  scan_diff "git diff --cached" --cached
+  echo "no-dashes: staged additions clean"
+fi
