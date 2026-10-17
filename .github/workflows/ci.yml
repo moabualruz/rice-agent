@@ -3,6 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  schedule:
+    # Weekly self-check: tools that break after an environment change surface without a push.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
