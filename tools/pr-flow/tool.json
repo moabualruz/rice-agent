@@ -1,0 +1,55 @@
+{
+  "schema": "tool/v1",
+  "name": "pr-flow",
+  "summary": "Use when checking, watching or merging a GitHub PR, or reading its CI run logs",
+  "intents": [
+    "watch pr checks",
+    "pr status",
+    "merge pr with head check",
+    "failed ci log",
+    "latest workflow runs",
+    "wait for ci to pass",
+    "is the pr mergeable",
+    "ci runs for a branch or sha",
+    "gh run view log failed",
+    "gh token or keyring auth fallback",
+    "land a pull request"
+  ],
+  "tags": ["github", "gh", "ci", "pull-request"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "pr-flow",
+  "language": "bash",
+  "side_effects": "remote-write",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "success: checks passed, status, runs or log printed, merged, or dry-run plan printed",
+    "1": "negative result: a check failed or none reported, nothing found, merge refused or rejected",
+    "2": "usage error, including merge without --match-head or --method",
+    "3": "environment failure: missing gh or jq, auth failed in every mode, repo unresolved, gh error",
+    "4": "checks still pending: --timeout expired while watching, or pending without --watch"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["gh", "jq"],
+  "test": "bash test.sh",
+  "replaces": [
+    "\\bgh\\s+pr\\s+(?:view|checks|status)\\b",
+    "\\bgh\\s+pr\\s+merge\\b",
+    "\\bgh\\s+run\\s+(?:list|view|watch)\\b",
+    "\\bgh\\s+run\\s+view\\b.*--log-failed",
+    "\\benv\\s+(?:-u\\s+\\S+\\s+)*-u\\s+(?:GITHUB_TOKEN|GH_TOKEN)\\b",
+    "(?s)\\b(?:while|until)\\b.*?\\bgh\\s+(?:pr|run)\\b.*?\\bsleep\\b"
+  ],
+  "distinct_from": [
+    {
+      "tool": "job-watch",
+      "reason": "job-watch watches local background processes; pr-flow polls GitHub pull request checks and workflow runs"
+    }
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "rice-kb:.scratch/agent-dry-v1/issues/09-pr-flow-for-the-pr-and-ci-lifecycle.md"
+  }
+}

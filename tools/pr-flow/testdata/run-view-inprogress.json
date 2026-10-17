@@ -1,0 +1,63 @@
+{
+  "conclusion": "",
+  "databaseId": 39037289804,
+  "displayTitle": "Add widget sorting",
+  "headBranch": "feature/sort",
+  "headSha": "4f2c9a1e7b3d5c8f0a6e2d4b1c9f7a3e5d8b0c2a",
+  "jobs": [
+    {
+      "completedAt": "2026-10-16T09:14:40Z",
+      "conclusion": "success",
+      "databaseId": 108543044560,
+      "name": "lint",
+      "startedAt": "2026-10-16T09:12:10Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run lint",
+          "number": 2,
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/acme/widgets/actions/runs/39037289804/job/108543044560"
+    },
+    {
+      "completedAt": "2026-10-16T09:15:02Z",
+      "conclusion": "failure",
+      "databaseId": 108543044561,
+      "name": "test",
+      "startedAt": "2026-10-16T09:12:10Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Run tests",
+          "number": 4,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Upload coverage",
+          "number": 5,
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/acme/widgets/actions/runs/39037289804/job/108543044561"
+    }
+  ],
+  "status": "in_progress",
+  "workflowName": "CI"
+}

@@ -1,0 +1,34 @@
+{
+  "baseRefName": "main",
+  "headRefName": "feature/sort",
+  "headRefOid": "4f2c9a1e7b3d5c8f0a6e2d4b1c9f7a3e5d8b0c2a",
+  "isDraft": false,
+  "mergeStateStatus": "CLEAN",
+  "mergeable": "MERGEABLE",
+  "number": 42,
+  "reviewDecision": "APPROVED",
+  "state": "OPEN",
+  "title": "Add widget sorting",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1001/job/2001",
+      "name": "lint",
+      "startedAt": "2026-10-14T12:17:24Z",
+      "status": "IN_PROGRESS",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-10-14T12:51:16Z",
+      "conclusion": "FAILURE",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1001/job/2001",
+      "name": "test",
+      "startedAt": "2026-10-14T12:17:24Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ]
+}

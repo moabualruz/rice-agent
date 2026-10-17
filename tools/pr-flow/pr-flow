@@ -1,0 +1,777 @@
+#!/usr/bin/env bash
+# pr-flow: check, watch and land pull requests and workflow runs with one bounded command each.
+# Run `pr-flow --help` for usage. Bash 3.2 compatible; requires gh and jq.
+set -euo pipefail
+
+PROG="pr-flow"
+NO_CHECKS_GRACE=120 # seconds a watched head may carry no checks before that is a verdict
+MAX_FAILED_JOBS=5   # failed jobs whose logs failed-log prints
+LOG_LINE_MAX=400    # characters kept per log line
+
+usage() {
+  cat <<'EOF'
+Usage: pr-flow <command> <arg> [options]
+
+Check, watch and land pull requests and workflow runs with one bounded command each.
+
+Commands:
+  status <pr>                    state, mergeable, head SHA, review decision, check rollup counts
+                                 and the failing or pending check names
+  checks <pr> [--watch] [--interval 30] [--timeout 1800]
+                                 check verdict; --watch polls (backing off to 4x the interval while
+                                 nothing changes) and prints only state transitions
+  runs <branch|sha> [--limit 5]  latest workflow runs: id, workflow, status, conclusion, age
+  failed-log <run-id> [--tail 80]
+                                 last lines of each failed job's failed steps, ending at the last
+                                 ##[error] line (timestamps and color codes stripped)
+  merge <pr> --match-head <sha> --method merge|squash|rebase [--dry-run]
+                                 merge only when the PR head equals <sha> (full 40-character SHA);
+                                 gh pr merge --match-head-commit makes GitHub refuse a moved head
+
+  <pr> is a number, owner/name#N or a pull request URL.
+
+Options:
+  --repo owner/name   repository; default: resolved inside the process with gh repo view
+                      (remote URLs are never printed)
+  --auth MODE         auto (default): run gh as is and, on an authentication or permission
+                      failure, retry once with GITHUB_TOKEN and GH_TOKEN unset, saying on
+                      stderr which mode succeeded; env: no retry; keyring: always unset them
+                      Why: gh prefers GITHUB_TOKEN/GH_TOKEN over its keyring login, so one stale exported token fails every gh call.
+  --json              machine-readable JSON on stdout (watch transitions go to stderr)
+  --dry-run           merge: print the verified plan and never call the merge endpoint
+  -h, --help          show this help
+
+Check verdict: only SUCCESS, SKIPPED and NEUTRAL pass. Cancelled, timed out, stale,
+action-required and other conclusions fail. A head with no checks is not a pass: watch
+waits up to 120 seconds for one to attach, then reports it.
+
+Exit codes:
+  0  success: checks passed, status or runs or log printed, merged, or dry-run plan printed
+  1  negative result: a check failed or none reported, nothing found, merge refused or rejected
+  2  usage error
+  3  environment failure: missing gh or jq, authentication failed in every mode, repository
+     unresolved, other gh or network error
+  4  checks still pending: --timeout expired while watching, or pending without --watch
+
+Example:
+  pr-flow checks 42 --repo acme/widgets --watch && pr-flow merge 42 --repo acme/widgets --match-head "$sha" --method squash
+EOF
+}
+
+note() { printf '%s: %s\n' "${PROG}" "$*" >&2; }
+die() {
+  local code="$1"
+  shift
+  note "$*"
+  exit "${code}"
+}
+usage_err() {
+  note "$*"
+  printf 'Run %s --help for usage.\n' "${PROG}" >&2
+  exit 2
+}
+
+is_uint() {
+  case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "${#1}" -le 6 ]
+}
+
+# ---------- argument parsing (builtins only, before any dependency check) ----------
+
+CMD=""
+ARG=""
+NPOS=0
+REPO=""
+REPO_SOURCE=""
+AUTH_MODE="auto"
+JSON=0
+WATCH=0
+DRY_RUN=0
+INTERVAL=30
+TIMEOUT=1800
+LIMIT=5
+TAIL=80
+MATCH_HEAD=""
+METHOD=""
+HELP=0
+USED=" "
+
+while [ "$#" -gt 0 ]; do
+  a="$1"
+  shift
+  case "${a}" in
+    --*=*)
+      name="${a%%=*}"
+      val="${a#*=}"
+      has_val=1
+      ;;
+    *)
+      name="${a}"
+      val=""
+      has_val=0
+      ;;
+  esac
+  case "${name}" in
+    -h | --help) HELP=1 ;;
+    --json | --watch | --dry-run)
+      [ "${has_val}" = 0 ] || usage_err "${name} takes no value"
+      USED="${USED}${name} "
+      case "${name}" in
+        --json) JSON=1 ;;
+        --watch) WATCH=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+      esac
+      ;;
+    --repo | --auth | --interval | --timeout | --limit | --tail | --match-head | --method)
+      if [ "${has_val}" = 0 ]; then
+        [ "$#" -gt 0 ] || usage_err "${name} needs a value"
+        val="$1"
+        shift
+      fi
+      USED="${USED}${name} "
+      case "${name}" in
+        --repo)
+          REPO="${val}"
+          REPO_SOURCE="--repo"
+          ;;
+        --auth) AUTH_MODE="${val}" ;;
+        --interval) INTERVAL="${val}" ;;
+        --timeout) TIMEOUT="${val}" ;;
+        --limit) LIMIT="${val}" ;;
+        --tail) TAIL="${val}" ;;
+        --match-head) MATCH_HEAD="${val}" ;;
+        --method) METHOD="${val}" ;;
+      esac
+      ;;
+    --)
+      while [ "$#" -gt 0 ]; do
+        NPOS=$((NPOS + 1))
+        if [ -z "${CMD}" ]; then CMD="$1"; elif [ "${NPOS}" = 2 ]; then ARG="$1"; fi
+        shift
+      done
+      ;;
+    -*) usage_err "unknown option: ${a}" ;;
+    *)
+      NPOS=$((NPOS + 1))
+      if [ -z "${CMD}" ]; then CMD="${a}"; elif [ "${NPOS}" = 2 ]; then ARG="${a}"; fi
+      ;;
+  esac
+done
+
+if [ "${HELP}" = 1 ]; then
+  usage
+  exit 0
+fi
+
+[ -n "${CMD}" ] || usage_err "missing command (status, checks, runs, failed-log or merge)"
+
+case "${CMD}" in
+  status) allowed=" --repo --auth --json " ;;
+  checks) allowed=" --repo --auth --json --watch --interval --timeout " ;;
+  runs) allowed=" --repo --auth --json --limit " ;;
+  failed-log) allowed=" --repo --auth --json --tail " ;;
+  merge) allowed=" --repo --auth --json --match-head --method --dry-run " ;;
+  *) usage_err "unknown command: ${CMD}" ;;
+esac
+for f in ${USED}; do
+  case "${allowed}" in
+    *" ${f} "*) ;;
+    *) usage_err "${f} does not apply to ${CMD}" ;;
+  esac
+done
+[ "${NPOS}" -ge 2 ] || usage_err "${CMD} needs an argument"
+[ "${NPOS}" -le 2 ] || usage_err "${CMD} takes one argument"
+
+case "${AUTH_MODE}" in
+  auto | env | keyring) ;;
+  *) usage_err "--auth must be auto, env or keyring" ;;
+esac
+
+valid_repo() {
+  local re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' owner name
+  [[ $1 =~ $re ]] || return 1
+  owner="${1%%/*}"
+  name="${1#*/}"
+  case "${owner}" in *[!.]*) ;; *) return 1 ;; esac
+  case "${name}" in *[!.]*) ;; *) return 1 ;; esac
+  return 0
+}
+
+if [ -n "${REPO_SOURCE}" ]; then
+  valid_repo "${REPO}" || usage_err "--repo must be owner/name"
+fi
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+set_repo_from_ref() {
+  if [ -n "${REPO}" ] && [ "$(lower "${REPO}")" != "$(lower "$1")" ]; then
+    usage_err "pull request reference names $1 but --repo is ${REPO}"
+  fi
+  valid_repo "$1" || usage_err "invalid repository in pull request reference: $1"
+  REPO="$1"
+}
+
+PR=""
+parse_pr() {
+  local ref="$1" re_num='^[0-9]{1,9}$' re_slug='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]{1,9})$'
+  local re_url='^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([0-9]{1,9})(/.*)?$'
+  if [[ $ref =~ $re_num ]]; then
+    PR="${ref}"
+  elif [[ $ref =~ $re_slug ]] || [[ $ref =~ $re_url ]]; then
+    PR="${BASH_REMATCH[2]}"
+    set_repo_from_ref "${BASH_REMATCH[1]}"
+  else
+    usage_err "invalid pull request '${ref}': use a number, owner/name#N or a pull request URL"
+  fi
+  PR=$((10#${PR}))
+  [ "${PR}" -ge 1 ] || usage_err "invalid pull request number: ${ref}"
+}
+
+case "${CMD}" in
+  status | checks) parse_pr "${ARG}" ;;
+  merge)
+    parse_pr "${ARG}"
+    [ -n "${MATCH_HEAD}" ] || usage_err "merge refuses without --match-head <sha> (the full head SHA you verified)"
+    sha_re='^[0-9a-fA-F]{40}$'
+    [[ ${MATCH_HEAD} =~ ${sha_re} ]] || usage_err "--match-head must be the full 40-character head SHA"
+    MATCH_HEAD="$(lower "${MATCH_HEAD}")"
+    case "${METHOD}" in
+      merge | squash | rebase) ;;
+      '') usage_err "merge needs --method merge|squash|rebase" ;;
+      *) usage_err "--method must be merge, squash or rebase" ;;
+    esac
+    ;;
+  runs)
+    [ -n "${ARG}" ] || usage_err "runs needs a branch or SHA"
+    case "${ARG}" in -* | *[[:space:]]*) usage_err "invalid branch or SHA: ${ARG}" ;; esac
+    is_uint "${LIMIT}" && [ "${LIMIT}" -ge 1 ] && [ "${LIMIT}" -le 50 ] || usage_err "--limit must be 1 to 50"
+    ;;
+  failed-log)
+    run_re='^[0-9]{1,15}$'
+    [[ ${ARG} =~ ${run_re} ]] || usage_err "invalid run id: ${ARG}"
+    is_uint "${TAIL}" && [ "${TAIL}" -ge 1 ] && [ "${TAIL}" -le 2000 ] || usage_err "--tail must be 1 to 2000"
+    ;;
+esac
+if [ "${CMD}" = checks ]; then
+  is_uint "${INTERVAL}" && [ "${INTERVAL}" -ge 1 ] && [ "${INTERVAL}" -le 3600 ] || usage_err "--interval must be 1 to 3600 seconds"
+  is_uint "${TIMEOUT}" && [ "${TIMEOUT}" -le 86400 ] || usage_err "--timeout must be 0 to 86400 seconds"
+fi
+
+# ---------- environment ----------
+
+for dep in gh jq; do
+  command -v "${dep}" >/dev/null 2>&1 || die 3 "missing required command: ${dep}"
+done
+
+export GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GIT_TERMINAL_PROMPT=0
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pr-flow.XXXXXX")" || die 3 "cannot create a temporary directory"
+trap 'rm -rf "${WORK}"' EXIT
+
+# ---------- gh with auth selection ----------
+
+AUTH_LATCHED=""
+AUTH_FAILED=0
+AUTH_TRIED=""
+
+gh_raw() {
+  local mode="$1"
+  shift
+  if [ "${mode}" = keyring ]; then
+    env -u GITHUB_TOKEN -u GH_TOKEN gh "$@" </dev/null >"${WORK}/out" 2>"${WORK}/err"
+  else
+    gh "$@" </dev/null >"${WORK}/out" 2>"${WORK}/err"
+  fi
+}
+
+is_auth_error() {
+  grep -qiE 'HTTP 401|Bad credentials|token in (GITHUB_TOKEN|GH_TOKEN) is invalid|Resource not accessible by (integration|personal access token)|Requires authentication|not logged in(to)? any|authentication required|SAML enforcement' "${WORK}/err"
+}
+
+auth_reason() {
+  grep -oiE 'HTTP 401[^(]*|Bad credentials|token in (GITHUB_TOKEN|GH_TOKEN) is invalid|Resource not accessible by (integration|personal access token)|Requires authentication|SAML enforcement' "${WORK}/err" | head -n 1 | sed -E 's/[[:space:]]+$//'
+}
+
+# gh_call ARGS...: run gh, leaving stdout in $WORK/out and stderr in $WORK/err.
+gh_call() {
+  local mode="${AUTH_MODE}" rc=0 reason
+  [ -z "${AUTH_LATCHED}" ] || mode="${AUTH_LATCHED}"
+  AUTH_FAILED=0
+  if [ "${mode}" = keyring ]; then
+    AUTH_TRIED="keyring login"
+    gh_raw keyring "$@" || rc=$?
+  else
+    AUTH_TRIED="environment as is"
+    gh_raw env "$@" || rc=$?
+  fi
+  [ "${rc}" -ne 0 ] || return 0
+  if ! is_auth_error; then
+    return "${rc}"
+  fi
+  if [ "${mode}" != auto ] || [ -z "${GITHUB_TOKEN:-}${GH_TOKEN:-}" ]; then
+    AUTH_FAILED=1
+    return "${rc}"
+  fi
+  reason="$(auth_reason)"
+  rc=0
+  AUTH_TRIED="environment token, then keyring login"
+  gh_raw keyring "$@" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    AUTH_LATCHED=keyring
+    note "auth: the GITHUB_TOKEN/GH_TOKEN environment token failed (${reason:-auth error}); the keyring login succeeded and is used for the rest of this run"
+    return 0
+  fi
+  if is_auth_error; then AUTH_FAILED=1; fi
+  return "${rc}"
+}
+
+show_err() {
+  [ -s "${WORK}/err" ] || return 0
+  sed -E -e 's/(gh[opsu]_|github_pat_)[A-Za-z0-9_]+/\1[redacted]/g' \
+    -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@#\1[redacted]@#g' "${WORK}/err" |
+    tail -n 12 | sed 's/^/  gh: /' >&2
+}
+
+# gh_fail CONTEXT [NOT_FOUND_CODE]: report a failed gh_call and exit.
+gh_fail() {
+  show_err
+  if [ "${AUTH_FAILED}" = 1 ]; then
+    die 3 "$1: authentication failed (tried: ${AUTH_TRIED}); check gh auth status"
+  fi
+  if grep -qiE 'Could not resolve to a|HTTP 404|not found' "${WORK}/err"; then
+    die "${2:-1}" "$1: not found"
+  fi
+  die 3 "$1: gh failed"
+}
+
+resolve_repo() {
+  [ -z "${REPO}" ] || return 0
+  if gh_call repo view --json nameWithOwner; then
+    REPO="$(jq -r '.nameWithOwner // empty' "${WORK}/out" 2>/dev/null || true)"
+  elif [ "${AUTH_FAILED}" = 1 ]; then
+    gh_fail "repository lookup"
+  fi
+  if [ -z "${REPO}" ] || ! valid_repo "${REPO}"; then
+    die 3 "cannot resolve the repository from this directory; pass --repo owner/name"
+  fi
+}
+
+# ---------- jq library ----------
+
+# shellcheck disable=SC2016 # a jq program: its $names are jq variables, not shell expansions
+JQ_LIB='
+def pad($n): tostring | if length >= $n then .[:$n] else . + (" " * ($n - length)) end;
+def checks_of: [ (.statusCheckRollup // [])[]
+    | if .__typename == "StatusContext" then
+        ((.state // "PENDING") | ascii_upcase) as $st
+        | {name: (.context // "(unnamed)"), workflow: "", started: (.startedAt // ""), state: $st,
+           bucket: (if $st == "SUCCESS" then "pass"
+                    elif ($st == "PENDING" or $st == "EXPECTED") then "pending"
+                    else "fail" end)}
+      else
+        ((.status // "") | ascii_upcase) as $s | ((.conclusion // "") | ascii_upcase) as $c
+        | {name: (.name // "(unnamed)"), workflow: (.workflowName // ""), started: (.startedAt // ""),
+           state: (if $s == "COMPLETED" then (if $c == "" then "NO_CONCLUSION" else $c end)
+                   elif $s == "" then "PENDING" else $s end),
+           bucket: (if $s != "COMPLETED" or $c == "" then "pending"
+                    elif $c == "SUCCESS" then "pass"
+                    elif ($c == "SKIPPED" or $c == "NEUTRAL") then "skip"
+                    else "fail" end)}
+      end
+    | .key = (if .workflow != "" then .workflow + " / " + .name else .name end) ]
+  | group_by(.key) | map(max_by(.started)) | map({key, state, bucket});
+def rollup: {total: length,
+    pass: (map(select(.bucket == "pass")) | length),
+    skip: (map(select(.bucket == "skip")) | length),
+    fail: (map(select(.bucket == "fail")) | length),
+    pending: (map(select(.bucket == "pending")) | length)}
+  | .verdict = (if .total == 0 then "none" elif .fail > 0 then "fail"
+                elif .pending > 0 then "pending" else "pass" end);
+def counts_text: "\(.verdict): \(.total) total, \(.pass) pass, \(.skip) skip, \(.fail) fail, \(.pending) pending";
+def nonpass: map(select(.bucket == "fail" or .bucket == "pending"))
+  | sort_by([(if .bucket == "fail" then 0 else 1 end), .key]);
+def nonpass_lines($max): (.[:$max][] | "  \(.bucket | pad(8))\(.key) (\(.state))"),
+  (if length > $max then "  ... \(length - $max) more" else empty end);
+def check_obj: checks_of as $c
+  | ($c | rollup) + {non_passing: ($c | nonpass | .[:50] | map({name: .key, state, bucket}))};
+def age: (now - fromdateiso8601) | floor | if . < 0 then 0 else . end
+  | if . < 60 then "\(.)s" elif . < 3600 then "\(. / 60 | floor)m"
+    elif . < 86400 then "\(. / 3600 | floor)h" else "\(. / 86400 | floor)d" end;
+'
+
+pr_fields="number,title,state,isDraft,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,reviewDecision,statusCheckRollup"
+
+fetch_pr() {
+  gh_call pr view "${PR}" --repo "${REPO}" --json "$1" || gh_fail "pull request ${REPO}#${PR}"
+}
+
+# ---------- status ----------
+
+cmd_status() {
+  fetch_pr "${pr_fields}"
+  jq -c --arg repo "${REPO}" "${JQ_LIB}"'
+    {repo: $repo, number, title: ((.title // "")[:200]), state, draft: (.isDraft // false),
+     mergeable: (.mergeable // ""), merge_state: (.mergeStateStatus // ""),
+     review_decision: (.reviewDecision // ""), head_sha: .headRefOid, head_ref: .headRefName,
+     base_ref: .baseRefName, checks: check_obj}' "${WORK}/out" >"${WORK}/status.json"
+  if [ "${JSON}" = 1 ]; then
+    cat "${WORK}/status.json"
+    return 0
+  fi
+  jq -r "${JQ_LIB}"'
+    "\(.repo)#\(.number) \(.state)\(if .draft then " (draft)" else "" end) \(.title[:100] | tojson)",
+    "head \(.head_sha) (\(.head_ref) -> \(.base_ref))",
+    "mergeable \(.mergeable), merge state \(.merge_state), review \(if .review_decision == "" then "none" else .review_decision end)",
+    "checks \(.checks | counts_text)",
+    (.checks.non_passing | map({key: .name, state, bucket}) | nonpass_lines(10))' "${WORK}/status.json"
+}
+
+# ---------- checks ----------
+
+# snapshot of $WORK/out: {"head": sha, "checks": [...]}
+snapshot() { jq -c "${JQ_LIB}"'{head: .headRefOid, checks: checks_of}' "${WORK}/out"; }
+
+report_checks() { # SNAPSHOT VERDICT_NOTE ELAPSED POLLS
+  local snap="$1" msg="$2"
+  if [ "${JSON}" = 1 ]; then
+    printf '%s' "${snap}" | jq -c --arg repo "${REPO}" --argjson number "${PR}" --arg note "${msg}" \
+      --argjson elapsed "$3" --argjson polls "$4" "${JQ_LIB}"'
+      .checks as $c | {repo: $repo, number: $number, head_sha: .head} + ($c | rollup)
+      + {note: $note, elapsed_seconds: $elapsed, polls: $polls,
+         checks: ($c | .[:100] | map({name: .key, state, bucket}))}'
+    return 0
+  fi
+  printf '%s' "${snap}" | jq -r --arg repo "${REPO}" --arg pr "${PR}" --arg note "${msg}" "${JQ_LIB}"'
+    "\($repo)#\($pr) head \(.head[:12]) checks \(.checks | rollup | counts_text)\(if $note == "" then "" else " (" + $note + ")" end)",
+    (.checks | nonpass | nonpass_lines(15))'
+}
+
+verdict_of() { printf '%s' "$1" | jq -r "${JQ_LIB}"'.checks | rollup | .verdict'; }
+
+verdict_exit() {
+  case "$1" in
+    pass) return 0 ;;
+    pending) return 4 ;;
+    *) return 1 ;;
+  esac
+}
+
+# emit LINE: transitions go to stdout in text mode, stderr in JSON mode
+emit() {
+  if [ "${JSON}" = 1 ]; then printf '%s\n' "$1" >&2; else printf '%s\n' "$1"; fi
+}
+
+cmd_checks() {
+  local snap verdict
+  fetch_pr headRefOid,state,statusCheckRollup
+  snap="$(snapshot)"
+  verdict="$(verdict_of "${snap}")"
+  if [ "${WATCH}" = 0 ]; then
+    report_checks "${snap}" "" 0 1
+    verdict_exit "${verdict}"
+    return $?
+  fi
+  watch_checks "${snap}"
+}
+
+watch_checks() {
+  local snap="$1" prev verdict start elapsed slept=0 cur="${INTERVAL}" max=$((INTERVAL * 4))
+  local polls=1 errors=0 limit wait lines head prev_head stamp
+  start="${SECONDS}"
+  emit "$(printf '%s' "${snap}" | jq -r --arg repo "${REPO}" --arg pr "${PR}" "${JQ_LIB}"'
+    "watching \($repo)#\($pr) head \(.head[:12]): \(.checks | rollup | counts_text)"')"
+  while :; do
+    verdict="$(verdict_of "${snap}")"
+    elapsed=$((SECONDS - start))
+    [ "${slept}" -le "${elapsed}" ] || elapsed="${slept}"
+    limit="${TIMEOUT}"
+    if [ "${verdict}" = none ] && [ "${NO_CHECKS_GRACE}" -lt "${limit}" ]; then limit="${NO_CHECKS_GRACE}"; fi
+    case "${verdict}" in
+      pass)
+        report_checks "${snap}" "after ${elapsed}s" "${elapsed}" "${polls}"
+        return 0
+        ;;
+      fail)
+        report_checks "${snap}" "after ${elapsed}s" "${elapsed}" "${polls}"
+        return 1
+        ;;
+    esac
+    if [ "${elapsed}" -ge "${limit}" ]; then
+      if [ "${verdict}" = none ]; then
+        report_checks "${snap}" "no check attached to this head after ${elapsed}s" "${elapsed}" "${polls}"
+        return 1
+      fi
+      report_checks "${snap}" "timeout after ${elapsed}s, still pending" "${elapsed}" "${polls}"
+      return 4
+    fi
+    wait="${cur}"
+    [ "$((limit - elapsed))" -ge "${wait}" ] || wait=$((limit - elapsed))
+    sleep "${wait}"
+    slept=$((slept + wait))
+    polls=$((polls + 1))
+    if ! gh_call pr view "${PR}" --repo "${REPO}" --json headRefOid,state,statusCheckRollup; then
+      [ "${AUTH_FAILED}" = 0 ] || gh_fail "pull request ${REPO}#${PR}"
+      errors=$((errors + 1))
+      [ "${errors}" -lt 3 ] || gh_fail "pull request ${REPO}#${PR} (3 consecutive poll failures)"
+      note "poll failed (${errors} of 3); retrying"
+      continue
+    fi
+    errors=0
+    prev="${snap}"
+    snap="$(snapshot)"
+    stamp="$(date -u +%H:%M:%S)"
+    prev_head="$(printf '%s' "${prev}" | jq -r '.head')"
+    head="$(printf '%s' "${snap}" | jq -r '.head')"
+    if [ "${head}" != "${prev_head}" ]; then
+      emit "$(printf '%s' "${snap}" | jq -r --arg t "${stamp}" --arg old "${prev_head}" "${JQ_LIB}"'
+        "\($t) head changed \($old[:12]) -> \(.head[:12]): \(.checks | rollup | counts_text)"')"
+      cur="${INTERVAL}"
+      continue
+    fi
+    lines="$(jq -rn --argjson prev "${prev}" --argjson cur "${snap}" --arg t "${stamp}" '
+      ($prev.checks | map({(.key): .}) | add // {}) as $p
+      | $cur.checks[] | . as $c | $p[$c.key] as $o
+      | if $o == null then "\($t) \($c.key): new \($c.bucket) (\($c.state))"
+        elif $o.bucket != $c.bucket then "\($t) \($c.key): \($o.bucket) -> \($c.bucket) (\($c.state))"
+        else empty end')"
+    if [ -n "${lines}" ]; then
+      emit "${lines}"
+      cur="${INTERVAL}"
+    else
+      cur=$((cur * 2))
+      [ "${cur}" -le "${max}" ] || cur="${max}"
+    fi
+  done
+}
+
+# ---------- runs ----------
+
+cmd_runs() {
+  local ref="${ARG}" kind=branch full sha40='^[0-9a-fA-F]{40}$' shortsha='^[0-9a-fA-F]{7,39}$'
+  if [[ ${ref} =~ ${sha40} ]]; then
+    kind=sha
+    ref="$(lower "${ref}")"
+  elif [[ ${ref} =~ ${shortsha} ]]; then
+    if gh_call api -H 'Accept: application/vnd.github.sha' "repos/${REPO}/commits/${ref}"; then
+      full="$(tr -d '[:space:]' <"${WORK}/out")"
+      if [[ ${full} =~ ${sha40} ]]; then
+        kind=sha
+        ref="${full}"
+      fi
+    elif [ "${AUTH_FAILED}" = 1 ]; then
+      gh_fail "commit lookup"
+    fi
+  fi
+  local filter="--branch"
+  [ "${kind}" = branch ] || filter="--commit"
+  gh_call run list --repo "${REPO}" "${filter}" "${ref}" --limit "${LIMIT}" \
+    --json databaseId,workflowName,status,conclusion,createdAt,event,headSha,headBranch,displayTitle ||
+    gh_fail "workflow runs"
+  jq -c --arg repo "${REPO}" --arg ref "${ref}" --arg kind "${kind}" "${JQ_LIB}"'
+    {repo: $repo, ref: $ref, ref_kind: $kind,
+     runs: [.[] | {id: .databaseId, workflow: .workflowName, title: ((.displayTitle // "")[:120]),
+                   status, conclusion: (.conclusion // ""), created_at: .createdAt,
+                   age: (.createdAt | age), event, head_sha: .headSha, head_branch: .headBranch}]}' \
+    "${WORK}/out" >"${WORK}/runs.json"
+  if [ "${JSON}" = 1 ]; then
+    cat "${WORK}/runs.json"
+  else
+    jq -r "${JQ_LIB}"'
+      "\(.repo) runs for \(.ref_kind) \(.ref): \(.runs | length) shown",
+      (if (.runs | length) > 0 then
+        ("ID" | pad(13)) + ("WORKFLOW" | pad(25)) + ("STATUS" | pad(12)) + ("CONCLUSION" | pad(16))
+          + ("AGE" | pad(6)) + ("EVENT" | pad(14)) + "HEAD",
+        (.runs[] | (.id | pad(13)) + (.workflow | pad(24) | . + " ") + (.status | pad(12))
+          + ((if .conclusion == "" then "-" else .conclusion end) | pad(16)) + (.age | pad(6))
+          + (.event | pad(14)) + (.head_sha[:7]))
+      else empty end)' "${WORK}/runs.json"
+  fi
+  [ "$(jq -r '.runs | length' "${WORK}/runs.json")" -gt 0 ] || {
+    note "no workflow runs for ${kind} ${ref}"
+    return 1
+  }
+}
+
+# ---------- failed-log ----------
+
+tail_log() { # FILE: per step, the last TAIL lines ending at the last ##[error]
+  LC_ALL=C awk -F '\t' -v n="${TAIL}" -v maxlen="${LOG_LINE_MAX}" \
+    -v bom="$(printf '\357\273\277')" -v esc="$(printf '\033')" '
+    function clean(s) {
+      if (index(s, bom) == 1) s = substr(s, 4)
+      sub(/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][.0-9]*Z ?/, "", s)
+      gsub(esc "\\[[0-9;]*[A-Za-z]", "", s)
+      gsub(/\^\[\[[0-9;]*[A-Za-z]/, "", s) # gh writes ESC as caret notation off a terminal
+      sub(/\r$/, "", s)
+      if (length(s) > maxlen) s = substr(s, 1, maxlen) "..."
+      return s
+    }
+    {
+      if (NF >= 3) { step = $2; msg = $0; sub(/^[^\t]*\t[^\t]*\t/, "", msg) }
+      else { step = "UNKNOWN STEP"; msg = $0 }
+      msg = clean(msg)
+      if (msg ~ /^##\[endgroup\]/) next
+      if (!(step in cnt)) { order[++k] = step; cnt[step] = 0 }
+      c = ++cnt[step]; buf[step, c] = msg
+      if (msg ~ /##\[error\]/) lasterr[step] = c
+    }
+    END {
+      for (i = 1; i <= k; i++) {
+        s = order[i]; c = cnt[s]; e = (s in lasterr) ? lasterr[s] : c
+        b = e - n + 1; if (b < 1) b = 1
+        label = (s == "UNKNOWN STEP") ? "job log" : "step " s
+        printf "-- %s: lines %d-%d of %d%s\n", label, b, e, c, ((s in lasterr) ? ", ending at the last ##[error]" : "")
+        for (j = b; j <= e; j++) print buf[s, j]
+      }
+    }' "$1"
+}
+
+cmd_failed_log() {
+  local run="${ARG}" nfailed shown=0 fetched=0 lastfail="" id name concl steps i=0
+  gh_call run view "${run}" --repo "${REPO}" \
+    --json databaseId,workflowName,displayTitle,status,conclusion,headSha,headBranch,jobs ||
+    gh_fail "run ${run}"
+  cp "${WORK}/out" "${WORK}/run.json"
+  jq -r '.jobs // [] | .[]
+    | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure"))
+    | [(.databaseId | tostring), .name, .conclusion,
+       ([.steps // [] | .[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name] | join(", "))]
+    | @tsv' "${WORK}/run.json" >"${WORK}/failed.tsv"
+  nfailed="$(wc -l <"${WORK}/failed.tsv" | tr -d ' ')"
+  : >"${WORK}/jobs.jsonl"
+  if [ "${JSON}" = 0 ]; then
+    jq -r --arg n "${nfailed}" '"run \(.databaseId) \(.workflowName) \(.status)/\(.conclusion // "-") head \(.headSha[:7]) (\(.headBranch)): \($n) failed job(s)"' "${WORK}/run.json"
+  fi
+  while IFS="$(printf '\t')" read -r id name concl steps; do
+    i=$((i + 1))
+    [ "${i}" -le "${MAX_FAILED_JOBS}" ] || break
+    shown=$((shown + 1))
+    if gh_call run view --repo "${REPO}" --job "${id}" --log-failed; then
+      fetched=$((fetched + 1))
+      tail_log "${WORK}/out" >"${WORK}/tail.txt"
+    else
+      [ "${AUTH_FAILED}" = 0 ] || gh_fail "job ${id} log"
+      lastfail="$(sed -E 's/(gh[opsu]_|github_pat_)[A-Za-z0-9_]+/\1[redacted]/g' "${WORK}/err" | tail -n 3 | tr '\n' ' ')"
+      printf -- '-- log unavailable: %s\n' "${lastfail}" >"${WORK}/tail.txt"
+    fi
+    if [ "${JSON}" = 1 ]; then
+      jq -cn --arg id "${id}" --arg name "${name}" --arg concl "${concl}" --arg steps "${steps}" \
+        --rawfile log "${WORK}/tail.txt" \
+        '{id: ($id | tonumber), name: $name, conclusion: $concl,
+          failed_steps: ($steps | if . == "" then [] else split(", ") end),
+          log: ($log | rtrimstr("\n") | split("\n"))}' >>"${WORK}/jobs.jsonl"
+    else
+      printf '== job %s (%s%s)\n' "${name}" "${concl}" "${steps:+; failed steps: ${steps}}"
+      cat "${WORK}/tail.txt"
+    fi
+  done <"${WORK}/failed.tsv"
+  if [ "${JSON}" = 1 ]; then
+    jq -c --arg repo "${REPO}" --argjson more "$((nfailed - shown))" --slurpfile jobs "${WORK}/jobs.jsonl" \
+      '{repo: $repo, run_id: .databaseId, workflow: .workflowName, status, conclusion: (.conclusion // ""),
+        head_sha: .headSha, head_branch: .headBranch, failed_jobs: $jobs, more_failed_jobs: $more}' \
+      "${WORK}/run.json"
+  elif [ "${nfailed}" -gt "${shown}" ]; then
+    printf '... %d more failed job(s) not shown\n' "$((nfailed - shown))"
+  fi
+  if [ "${nfailed}" = 0 ]; then
+    note "run ${run} has no failed jobs ($(jq -r '"\(.status)/\(.conclusion // "-")"' "${WORK}/run.json"))"
+    return 1
+  fi
+  if [ "${fetched}" = 0 ]; then
+    note "no failed job log is available yet (gh serves logs once the job or run completes)"
+    return 1
+  fi
+  return 0
+}
+
+# ---------- merge ----------
+
+merge_report() { # RESULT REASON [MERGE_COMMIT]
+  if [ "${JSON}" = 1 ]; then
+    jq -cn --arg repo "${REPO}" --argjson number "${PR}" --arg method "${METHOD}" --arg head "${MATCH_HEAD}" \
+      --arg result "$1" --arg reason "$2" --arg commit "${3:-}" --argjson dry "${DRY_RUN}" \
+      '{repo: $repo, number: $number, method: $method, match_head: $head, dry_run: ($dry == 1),
+        result: $result, reason: $reason, merge_commit: $commit}'
+  else
+    printf '%s %s#%s: %s\n' "$1" "${REPO}" "${PR}" "$2"
+  fi
+}
+
+cmd_merge() {
+  local state head draft mergeable mstate review checks_line failing
+  fetch_pr "${pr_fields}"
+  cp "${WORK}/out" "${WORK}/pr.json"
+  state="$(jq -r '.state' "${WORK}/pr.json")"
+  head="$(jq -r '.headRefOid // ""' "${WORK}/pr.json" | tr '[:upper:]' '[:lower:]')"
+  draft="$(jq -r '.isDraft // false' "${WORK}/pr.json")"
+  mergeable="$(jq -r '.mergeable // ""' "${WORK}/pr.json")"
+  mstate="$(jq -r '.mergeStateStatus // ""' "${WORK}/pr.json")"
+  review="$(jq -r '.reviewDecision // "" | if . == "" then "none" else . end' "${WORK}/pr.json")"
+  checks_line="$(jq -r "${JQ_LIB}"'checks_of | rollup | counts_text' "${WORK}/pr.json")"
+  failing="$(jq -r "${JQ_LIB}"'checks_of | nonpass | map("\(.key) (\(.state))") | .[:10] | join(", ")' "${WORK}/pr.json")"
+
+  if [ "${state}" = MERGED ]; then
+    if [ "${head}" = "${MATCH_HEAD}" ]; then
+      merge_report already-merged "already merged at head ${head}"
+      return 0
+    fi
+    merge_report refused "already merged, but at head ${head}, not ${MATCH_HEAD}"
+    return 1
+  fi
+  if [ "${state}" != OPEN ]; then
+    merge_report refused "pull request is ${state}"
+    return 1
+  fi
+  if [ "${head}" != "${MATCH_HEAD}" ]; then
+    merge_report refused "head is ${head}, not ${MATCH_HEAD}; re-read it with pr-flow status and re-verify"
+    return 1
+  fi
+  if [ "${draft}" = true ]; then
+    merge_report refused "pull request is a draft"
+    return 1
+  fi
+  if [ "${mergeable}" = CONFLICTING ]; then
+    merge_report refused "pull request has merge conflicts"
+    return 1
+  fi
+  if [ "${JSON}" = 0 ]; then
+    printf 'verified %s#%s head %s; mergeable %s, merge state %s, review %s, checks %s\n' \
+      "${REPO}" "${PR}" "${head}" "${mergeable}" "${mstate}" "${review}" "${checks_line}"
+  fi
+  [ -z "${failing}" ] || note "warning: checks not green (GitHub enforces only the required ones): ${failing}"
+  if [ "${DRY_RUN}" = 1 ]; then
+    merge_report would-merge "dry run: would run gh pr merge ${PR} --repo ${REPO} --${METHOD} --match-head-commit ${MATCH_HEAD}"
+    return 0
+  fi
+  if ! gh_call pr merge "${PR}" --repo "${REPO}" "--${METHOD}" --match-head-commit "${MATCH_HEAD}"; then
+    show_err
+    [ "${AUTH_FAILED}" = 0 ] || die 3 "merge: authentication failed (tried: ${AUTH_TRIED}); check gh auth status"
+    merge_report rejected "gh pr merge failed; nothing was merged by pr-flow"
+    return 1
+  fi
+  if gh_call pr view "${PR}" --repo "${REPO}" --json state,mergeCommit; then
+    state="$(jq -r '.state // ""' "${WORK}/out")"
+    if [ "${state}" = MERGED ]; then
+      merge_report merged "merged with --${METHOD} at head ${MATCH_HEAD}" "$(jq -r '.mergeCommit.oid // ""' "${WORK}/out")"
+      return 0
+    fi
+    merge_report requested "gh accepted the merge; the pull request is still ${state} (merge queue or pending requirements)"
+    return 0
+  fi
+  merge_report requested "gh accepted the merge; the follow-up state read failed"
+}
+
+# ---------- dispatch ----------
+
+# Called as plain commands so errexit stays active inside them; a command's non-zero return
+# (1 or 4) then becomes the exit status.
+resolve_repo
+case "${CMD}" in
+  status) cmd_status ;;
+  checks) cmd_checks ;;
+  runs) cmd_runs ;;
+  failed-log) cmd_failed_log ;;
+  merge) cmd_merge ;;
+esac
