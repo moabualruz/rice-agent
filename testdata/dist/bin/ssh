@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Stub ssh for remote install tests: checks the fixed options, records argv, then runs the
+# remote command locally under a fake remote HOME with stdin passed through.
+set -euo pipefail
+if [ -n "${STUB_SSH_ARGS:-}" ]; then
+  printf '%s\n' "$@" > "$STUB_SSH_ARGS"
+fi
+if [ "$#" -ne 7 ]; then
+  echo "stub ssh: expected 7 arguments, got $#" >&2
+  exit 255
+fi
+if [ "$1" != -T ] || [ "$2" != -o ] || [ "$3" != BatchMode=yes ] || [ "$4" != -o ] || [ "$5" != ConnectTimeout=10 ]; then
+  echo "stub ssh: unexpected options" >&2
+  exit 255
+fi
+if [ "$7" != 'bash -s' ]; then
+  echo "stub ssh: the remote command must be exactly: bash -s" >&2
+  exit 255
+fi
+exec env -u AGENT_DRY_ROOT -u AGENT_DRY_CONFIG -u AGENT_DRY_STATE HOME="$STUB_REMOTE_HOME" "${STUB_BASH:-bash}" -s

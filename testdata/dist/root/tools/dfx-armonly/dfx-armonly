@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fixture tool dfx-armonly for internal/dist tests.
+set -euo pipefail
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  echo "Usage: dfx-armonly [name]"
+  exit 0
+fi
+echo "hello from dfx-armonly ${1:-world}"

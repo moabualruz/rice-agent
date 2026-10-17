@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fixture tool dfx-hello for internal/dist tests.
+set -euo pipefail
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  echo "Usage: dfx-hello [name]"
+  exit 0
+fi
+echo "hello from dfx-hello ${1:-world}"

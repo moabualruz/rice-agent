@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "dfx-armonly",
+  "summary": "Use when testing agent-dry dist fixtures (dfx-armonly).",
+  "intents": ["dist fixture dfx-armonly", "install fixture tool", "vendor fixture tool"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "dfx-armonly",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "printed a greeting", "2": "usage error"},
+  "platforms": ["linux-arm64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "agent-dry-v1 ticket 05 fixture"}
+}

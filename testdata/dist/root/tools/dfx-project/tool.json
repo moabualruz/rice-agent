@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "dfx-project",
+  "summary": "Use when testing agent-dry dist fixtures (dfx-project).",
+  "intents": ["dist fixture dfx-project", "install fixture tool", "vendor fixture tool"],
+  "kind": "script",
+  "scope": "project",
+  "entry": "dfx-project",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "printed a greeting", "2": "usage error"},
+  "platforms": ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "agent-dry-v1 ticket 05 fixture"}
+}
