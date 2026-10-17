@@ -276,6 +276,11 @@ func (c *checker) duplicate(t *manifest.Tool) gateResult {
 	for _, d := range t.DistinctFrom {
 		covered[d.Tool] = true
 	}
+	// A declaration made by the other tool covers the pair too, so one side declaring is enough and a
+	// growing library cannot flip a pair that was already reviewed.
+	for name := range c.reverseDeclared(t.Name) {
+		covered[name] = true
+	}
 	query := strings.Join(append([]string{t.Name, t.Summary}, t.Intents...), " ")
 	hits := duplicates(ix, query, t.Name, covered, true)
 	if len(hits) == 0 {
@@ -637,4 +642,25 @@ func listSome(ps []string) string {
 		return strings.Join(ps[:5], ", ") + fmt.Sprintf(" and %d more", len(ps)-5)
 	}
 	return strings.Join(ps, ", ")
+}
+
+// reverseDeclared returns the tools whose manifests name tool in extends or distinct_from.
+// Unreadable manifests are skipped here; G1 reports them.
+func (c *checker) reverseDeclared(tool string) map[string]bool {
+	out := map[string]bool{}
+	others, _ := manifest.LoadAll(c.toolsDir)
+	for _, o := range others {
+		if o.Name == tool {
+			continue
+		}
+		if o.Extends == tool {
+			out[o.Name] = true
+		}
+		for _, d := range o.DistinctFrom {
+			if d.Tool == tool {
+				out[o.Name] = true
+			}
+		}
+	}
+	return out
 }

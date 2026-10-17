@@ -98,6 +98,12 @@ func TestCheckDuplicate(t *testing.T) {
 		t.Errorf("declared distinct: exit %d\n%s", code, out)
 	}
 
+	// A declaration made by the other tool clears the pair from this side too.
+	useIndex(t, nil, hit("g2-declared-distinct", "script"))
+	if code, out, _ := run(t, "check", "good-tool"); code != 0 {
+		t.Errorf("reverse declaration not honored: exit %d\n%s", code, out)
+	}
+
 	useIndex(t, errors.New("index unreadable"))
 	code, out, _ = run(t, "check", "good-tool")
 	if code != 3 || parseCheck(t, out)["good-tool/G2"].status != "FAIL" {
