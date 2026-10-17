@@ -28,8 +28,8 @@ func TestRepositoryTools(t *testing.T) {
 
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]string{
-		"missing fields": `{"schema":"tool/v1","name":"x"}`,
-		"bad summary":    `{"schema":"tool/v1","name":"ab","summary":"does a thing nicely","intents":["a b c","d e f","g h i"],"kind":"script","scope":"global","entry":"ab","language":"bash","side_effects":"read","exit_codes":{"0":"ok","2":"usage"},"platforms":["linux-amd64"],"test":"bash test.sh","status":"trial","origin":{"date":"2026-10-17","builder":"model","task":"task-1"}}`,
+		"missing fields":        `{"schema":"tool/v1","name":"x"}`,
+		"bad summary":           `{"schema":"tool/v1","name":"ab","summary":"does a thing nicely","intents":["a b c","d e f","g h i"],"kind":"script","scope":"global","entry":"ab","language":"bash","side_effects":"read","exit_codes":{"0":"ok","2":"usage"},"platforms":["linux-amd64"],"test":"bash test.sh","status":"trial","origin":{"date":"2026-10-17","builder":"model","task":"task-1"}}`,
 		"write without dry_run": `{"schema":"tool/v1","name":"ab","summary":"Use when testing a thing","intents":["a b c","d e f","g h i"],"kind":"script","scope":"global","entry":"ab","language":"bash","side_effects":"remote-write","exit_codes":{"0":"ok","2":"usage"},"platforms":["linux-amd64"],"test":"bash test.sh","status":"trial","origin":{"date":"2026-10-17","builder":"model","task":"task-1"}}`,
 	}
 	for name, raw := range cases {

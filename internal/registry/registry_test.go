@@ -166,6 +166,27 @@ func TestNoProject(t *testing.T) {
 	}
 }
 
+// TestNoInstalled keeps admission scores independent of the skills a host has installed under HOME.
+func TestNoInstalled(t *testing.T) {
+	env := testEnv(t, nil)
+	with, err := Load(env, Options{NoProject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	without, err := Load(env, Options{NoProject: true, NoInstalled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(without.docs) >= len(with.docs) {
+		t.Fatalf("NoInstalled kept %d of %d docs; installed skills must be dropped", len(without.docs), len(with.docs))
+	}
+	for _, d := range without.docs {
+		if d.Source == srcSkill && !strings.HasPrefix(d.Path, without.root) {
+			t.Errorf("NoInstalled loaded installed skill %s from %s", d.Name, d.Path)
+		}
+	}
+}
+
 func TestRanking(t *testing.T) {
 	ix := loadFixture(t, testEnv(t, nil))
 	hits := map[string]string{

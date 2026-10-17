@@ -15,7 +15,12 @@
     "gh token or keyring auth fallback",
     "land a pull request"
   ],
-  "tags": ["github", "gh", "ci", "pull-request"],
+  "tags": [
+    "github",
+    "gh",
+    "ci",
+    "pull-request"
+  ],
   "kind": "script",
   "scope": "global",
   "entry": "pr-flow",
@@ -29,8 +34,14 @@
     "3": "environment failure: missing gh or jq, auth failed in every mode, repo unresolved, gh error",
     "4": "checks still pending: --timeout expired while watching, or pending without --watch"
   },
-  "platforms": ["darwin-arm64", "linux-amd64"],
-  "requires": ["gh", "jq"],
+  "platforms": [
+    "darwin-arm64",
+    "linux-amd64"
+  ],
+  "requires": [
+    "gh",
+    "jq"
+  ],
   "test": "bash test.sh",
   "replaces": [
     "\\bgh\\s+pr\\s+(?:view|checks|status)\\b",
@@ -44,6 +55,10 @@
     {
       "tool": "job-watch",
       "reason": "job-watch watches local background processes; pr-flow polls GitHub pull request checks and workflow runs"
+    },
+    {
+      "tool": "repo-state",
+      "reason": "repo-state reports local Git working-tree state; pr-flow reads and lands GitHub pull requests and workflow runs"
     }
   ],
   "status": "trial",

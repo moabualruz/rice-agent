@@ -40,6 +40,7 @@ type Result struct {
 type Options struct {
 	ProjectRoot string // Git root to discover project commands from; empty means the working directory's root
 	NoProject   bool   // skip project discovery (used by gates and tests)
+	NoInstalled bool   // skip skills installed under HOME, so scores do not depend on the host (admission gates)
 }
 
 // Threshold is the minimum score for a result to count as a match. Scores are BM25F over name,
@@ -180,7 +181,9 @@ func load(getenv func(string) string, opts Options, rebuild bool) (*Index, error
 	add(c.Skills)
 	add(projectDocs)
 	add(projectSkills)
-	add(c.Installed)
+	if !opts.NoInstalled {
+		add(c.Installed)
+	}
 	add(c.Wanted)
 	ix.prepare()
 	return ix, nil

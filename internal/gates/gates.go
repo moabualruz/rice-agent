@@ -27,7 +27,7 @@ type searcher interface {
 
 // loadIndex loads the registry without project discovery. Tests replace it.
 var loadIndex = func(getenv func(string) string) (searcher, error) {
-	ix, err := registry.Load(getenv, registry.Options{NoProject: true})
+	ix, err := registry.Load(getenv, registry.Options{NoProject: true, NoInstalled: true})
 	if err != nil {
 		return nil, err
 	}
