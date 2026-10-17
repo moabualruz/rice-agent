@@ -1,0 +1,31 @@
+#!/bin/sh
+# Stub zvec-grep for registry tests. ZG_STUB_LOG receives one line per call.
+# ZG_STUB_QUERY: ok (print $ZG_STUB_OUT), slow (sleep in a child), fail. ZG_STUB_INDEX: ok, fail.
+[ -n "$ZG_STUB_LOG" ] && echo "$*" >> "$ZG_STUB_LOG"
+cmd=$1
+shift
+case $cmd in
+query)
+  case ${ZG_STUB_QUERY:-ok} in
+  slow) sleep 5 ;;
+  fail) echo "Error: stub query failure" >&2; exit 1 ;;
+  *) cat "$ZG_STUB_OUT" ;;
+  esac
+  ;;
+index)
+  if [ "${ZG_STUB_INDEX:-ok}" = fail ]; then
+    echo "Error: stub index failure" >&2
+    exit 1
+  fi
+  mkdir -p "$1/.zvec-grep"
+  echo "Indexing complete"
+  ;;
+status)
+  n=$(find "$1" -name '*.md' -not -path '*/.zvec-grep/*' | wc -l | tr -d ' ')
+  echo "  Coverage    100%  $n / $n files"
+  ;;
+*)
+  echo "stub zg: unsupported command $cmd" >&2
+  exit 2
+  ;;
+esac

@@ -14,14 +14,17 @@ import (
 	"github.com/moabualruz/agent-dry/internal/cli"
 	"github.com/moabualruz/agent-dry/internal/manifest"
 	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/agent-dry/internal/registry"
 )
 
 const doctorUsage = `Usage: agent-dry doctor [--json]
 
 Report this host's agent-dry health: config presence and parse, root, prefix on PATH, every
 receipt link, tools the root installs that are not linked, commands that linked tools require,
-index cache freshness (state index.json versus manifests) and go, jq and shellcheck availability.
-Warnings (missing go or shellcheck, a missing or stale index that find rebuilds) do not fail.
+index cache freshness (state index.json versus manifests), go, jq and shellcheck availability, and
+zvec-grep (zg) presence and the semantic corpus index state (agent-dry index --semantic).
+Warnings (missing go or shellcheck, a missing or stale index that find rebuilds, no zg or no corpus
+index, which only turn semantic recall off) do not fail.
 
 Options:
   --json   print the checks as JSON
@@ -215,6 +218,11 @@ func diagnose(getenv func(string) string) []Check {
 		default:
 			add("PASS", "index", "%s is fresh", idx)
 		}
+	}
+
+	// Semantic recall is optional: these lines are PASS or WARN, never FAIL.
+	for _, s := range registry.SemanticChecks(getenv) {
+		add(s.Status, s.Name, "%s", s.Detail)
 	}
 
 	for _, tool := range []string{"go", "jq", "shellcheck"} {

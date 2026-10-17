@@ -27,6 +27,8 @@ type miss struct {
 	Project string   `json:"project"`
 	Harness string   `json:"harness"`
 	Session string   `json:"session,omitempty"`
+	// Semantic records whether zvec-grep recall ran (answered) for this miss.
+	Semantic bool `json:"semantic"`
 }
 
 func (ix *Index) missPath() string { return filepath.Join(ix.stateDir, MissFile) }
@@ -72,16 +74,18 @@ func session(getenv func(string) string) string {
 	return ""
 }
 
-// recordMiss appends one redacted record with a single O_APPEND write.
-func (ix *Index) recordMiss(query string, now time.Time) error {
+// recordMiss appends one redacted record with a single O_APPEND write; semantic says whether
+// zvec-grep recall ran for the query.
+func (ix *Index) recordMiss(query string, now time.Time, semantic bool) error {
 	q := redact(query)
 	rec := miss{
-		TS:      now.UTC().Format(time.RFC3339),
-		Query:   truncate(q, 300),
-		Tokens:  signature(q),
-		Project: ix.projectName,
-		Harness: harness(ix.getenv),
-		Session: session(ix.getenv),
+		TS:       now.UTC().Format(time.RFC3339),
+		Query:    truncate(q, 300),
+		Tokens:   signature(q),
+		Project:  ix.projectName,
+		Harness:  harness(ix.getenv),
+		Session:  session(ix.getenv),
+		Semantic: semantic,
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

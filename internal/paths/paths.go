@@ -22,6 +22,13 @@ type Config struct {
 	OpenBao *OpenBao `json:"openbao,omitempty"`
 	// Repos lists repository roots that audit and vendored-copy checks visit.
 	Repos []string `json:"repos,omitempty"`
+	// Semantic configures zvec-grep recall over the registry corpus (agent-dry index --semantic).
+	Semantic *Semantic `json:"semantic,omitempty"`
+}
+
+// Semantic names the embedding model zvec-grep uses for the registry corpus index.
+type Semantic struct {
+	Embedding string `json:"embedding,omitempty"` // default local/potion-code-16m-v2
 }
 
 // Host is one remote machine.

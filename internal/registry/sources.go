@@ -93,6 +93,7 @@ func (ix *Index) cached(rebuild bool) (*cacheFile, error) {
 		return nil, err
 	}
 	ix.cacheErr = writeCache(ix.stateDir, path, c)
+	ix.syncCorpus(c)
 	return c, nil
 }
 

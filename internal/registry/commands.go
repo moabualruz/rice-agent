@@ -30,20 +30,26 @@ const DefaultLimit = 5
 
 const maxLimit = 50
 
-const findUsage = `Usage: agent-dry find <words...> [--json] [--project <root>] [--limit N]
+const findUsage = `Usage: agent-dry find <words...> [--json] [--project <root>] [--limit N] [--debug]
 Rank agent-dry tools and skills, the project's commands (just, package.json, Makefile, scripts/,
 .agent-dry.json), installed skills, external CLIs (registry/providers.json), wanted families and
 earlier misses for the intent words.
 Lines: name  summary  [kind scope] entry; an external CLI ends with (installed) or
-(missing: <install hint>), checked on PATH now; hints: WANTED <family> and SEEN <date> <project>.
+(missing: <install hint>), checked on PATH now; hints: WANTED <family>, MAYBE <name> and
+SEEN <date> <project>.
+When nothing clears the threshold and a corpus index exists (agent-dry index --semantic), zvec-grep
+(zg) recalls paraphrases within 3 s: a hit both its FTS and vector routes rank first is a result
+(source semantic); the next hit prints as one MAYBE hint. Without zg or the index, or on any zg
+failure, find stays lexical.
 
 Options:
-  --json            print {"results": [...], "hints": [...]}
+  --json            print {"results": [...], "hints": [...]}; recall hits carry "semantic": true
   --project <root>  discover project commands from <root> (default: Git root of the working directory)
   --limit N         print at most N results (default 5)
+  --debug           print one stderr line on what semantic recall did
 
-Exit codes: 0 a result cleared the threshold, 1 none did (the miss is logged; hints alone do not
-count), 2 usage error, 3 unreadable index or agent-dry root.
+Exit codes: 0 a result cleared the threshold or semantic recall agreed, 1 none did (the miss is
+logged; hints alone do not count), 2 usage error, 3 unreadable index or agent-dry root.
 Example: agent-dry find scan for em dash
 `
 
@@ -56,16 +62,23 @@ Exit codes: 0 shown, 1 no entry by that name, 2 usage error, 3 unreadable index 
 Example: agent-dry show check-no-dashes
 `
 
-const indexUsage = `Usage: agent-dry index [--rebuild]
+const indexUsage = `Usage: agent-dry index [--rebuild] [--semantic]
 Cache agent-dry tools, skills, installed skills, external providers and wanted families in
 <state>/index.json. find uses the cache while the source modification times are unchanged; project
-commands and whether an external command is on PATH stay live.
+commands and whether an external command is on PATH stay live. Every rebuild also writes one card
+per tool, skill, external provider and wanted family to <state>/corpus/<kind>/<name>.md and
+removes cards whose entry is gone.
 
 Options:
-  --rebuild  rebuild even when the cache is fresh
+  --rebuild   rebuild even when the cache is fresh
+  --semantic  create or refresh the zvec-grep index of the corpus:
+              zg index <corpus> --mode direct --embedding <config semantic.embedding,
+              default local/potion-code-16m-v2>. Only this flag creates that index; once it
+              exists, later rebuilds refresh it incrementally.
 
-Exit codes: 0 index fresh or rebuilt, 2 usage error, 3 unreadable root or index, or index not writable.
-Example: agent-dry index --rebuild
+Exit codes: 0 index fresh or rebuilt, 2 usage error, 3 unreadable root or index, index not
+writable, or --semantic without zg or with a failed zg index.
+Example: agent-dry index --semantic
 `
 
 const guideUsage = `Usage: agent-dry guide [topic | --list]
@@ -110,8 +123,10 @@ func checkProject(p string) error {
 
 // Hint is a WANTED or SEEN line.
 type Hint struct {
-	Kind          string `json:"kind"` // wanted or seen
+	Kind          string `json:"kind"` // wanted, maybe or seen
 	Text          string `json:"text"`
+	Name          string `json:"name,omitempty"`    // maybe: the entry zvec-grep suggested
+	Summary       string `json:"summary,omitempty"` // maybe: its summary
 	Family        string `json:"family,omitempty"`
 	SuggestedName string `json:"suggested_name,omitempty"`
 	Date          string `json:"date,omitempty"`
@@ -121,7 +136,7 @@ type Hint struct {
 
 func runFind(env *cli.Env) int {
 	var words []string
-	asJSON, project, limit := false, "", DefaultLimit
+	asJSON, debug, project, limit := false, false, "", DefaultLimit
 	args := env.Args
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -135,6 +150,10 @@ func runFind(env *cli.Env) int {
 		}
 		if a == "--json" {
 			asJSON = true
+			continue
+		}
+		if a == "--debug" {
+			debug = true
 			continue
 		}
 		if v, n, err := flagValue(args, i, "--project"); err != nil {
@@ -172,9 +191,23 @@ func runFind(env *cli.Env) int {
 	ix.warn(env.Stderr)
 
 	results := ix.Search(query, limit)
-	hints := ix.hints(query, results)
+	// Semantic recall runs only after a lexical miss; the lexical decision stands otherwise.
+	var rec recallResult
 	if len(results) == 0 {
-		if err := ix.recordMiss(query, time.Now()); err != nil {
+		rec = ix.recall(query)
+		results = append(results, rec.Results...)
+		if len(results) > limit {
+			results = results[:limit]
+		}
+	} else {
+		rec.Note = "semantic recall skipped: lexical match"
+	}
+	if debug {
+		fmt.Fprintf(env.Stderr, "agent-dry: debug: %s\n", rec.Note)
+	}
+	hints := ix.hints(query, results, rec)
+	if len(results) == 0 {
+		if err := ix.recordMiss(query, time.Now(), rec.Ran); err != nil {
 			fmt.Fprintf(env.Stderr, "agent-dry: warning: miss not logged: %v\n", err)
 		}
 	}
@@ -230,22 +263,26 @@ func tailTruncate(s string, n int) string {
 
 // hints returns at most one WANTED and, when nothing matched, at most one SEEN line. SEEN is
 // computed before the current miss is appended.
-func (ix *Index) hints(query string, results []Result) []Hint {
+func (ix *Index) hints(query string, results []Result, rec recallResult) []Hint {
 	hints := []Hint{}
-	if d := ix.wanted(ix.prepareQuery(query)); d != nil && d.Wanted != nil {
-		built := false
+	built := func(f *Family) bool {
 		for _, r := range results {
-			if strings.EqualFold(r.Name, d.Wanted.SuggestedName) {
-				built = true
+			if strings.EqualFold(r.Name, f.SuggestedName) {
+				return true
 			}
 		}
-		if !built {
-			hints = append(hints, Hint{
-				Kind: "wanted", Family: d.Wanted.Family, SuggestedName: d.Wanted.SuggestedName,
-				Text: fmt.Sprintf("WANTED %s: build %s before use", d.Wanted.Family, d.Wanted.SuggestedName),
-			})
+		return false
+	}
+	if d := ix.wanted(ix.prepareQuery(query)); d != nil && d.Wanted != nil && !built(d.Wanted) {
+		hints = append(hints, wantedHint(d.Wanted))
+	}
+	for _, h := range rec.Wanted {
+		if len(hints) == 0 || hints[0].Family != h.Family {
+			hints = append(hints, h)
+			break
 		}
 	}
+	hints = append(hints, rec.Maybes...)
 	if len(results) == 0 {
 		if m := ix.seen(query); m != nil {
 			date := m.TS
@@ -264,6 +301,13 @@ func (ix *Index) hints(query string, results []Result) []Hint {
 		}
 	}
 	return hints
+}
+
+func wantedHint(f *Family) Hint {
+	return Hint{
+		Kind: "wanted", Family: f.Family, SuggestedName: f.SuggestedName,
+		Text: fmt.Sprintf("WANTED %s: build %s before use", f.Family, f.SuggestedName),
+	}
 }
 
 // warn prints at most three source warnings to stderr.
@@ -458,7 +502,7 @@ func toolHelp(entry, dir string, max int) string {
 }
 
 func runIndex(env *cli.Env) int {
-	rebuild := false
+	rebuild, semantic := false, false
 	for _, a := range env.Args {
 		switch {
 		case isHelp(a):
@@ -466,6 +510,8 @@ func runIndex(env *cli.Env) int {
 			return cli.ExitOK
 		case a == "--rebuild":
 			rebuild = true
+		case a == "--semantic":
+			semantic = true
 		default:
 			return cli.Usagef(env, "index: unexpected argument %s; see agent-dry index --help", a)
 		}
@@ -493,6 +539,63 @@ func runIndex(env *cli.Env) int {
 	}
 	fmt.Fprintf(env.Stdout, "index %s: %d tools, %d skills, %d installed skills, %d external providers, %d wanted families at %s\n",
 		state, tools, skills, ix.counts[srcSkill], ix.counts[srcExternal], ix.counts[srcWanted], ix.tilde(ix.indexPath()))
+	if semantic {
+		return ix.indexSemantic(env, rebuild)
+	}
+	// An existing corpus index with changed cards is refreshed here, retrying a failed attempt.
+	dir := ix.corpusDir()
+	if pending, _ := pendingState(dir); pending && semanticIndexed(dir) {
+		zg := lookPath(env.Getenv, "zg")
+		if zg == "" {
+			fmt.Fprintf(env.Stderr, "agent-dry: warning: semantic index refresh pending; zg not on PATH\n")
+		} else if err := refreshCorpus(zg, dir, refreshTimeout); err != nil {
+			fmt.Fprintf(env.Stderr, "agent-dry: warning: semantic index refresh failed: %v; run agent-dry index --semantic\n", err)
+		} else {
+			fmt.Fprintf(env.Stdout, "semantic index refreshed at %s\n", ix.tilde(dir))
+		}
+	}
+	return cli.ExitOK
+}
+
+// indexSemantic writes the corpus and explicitly creates or refreshes its zvec-grep index. This is
+// the only place a corpus index is created (persistent indexes need an explicit request).
+func (ix *Index) indexSemantic(env *cli.Env, rebuild bool) int {
+	dir := ix.corpusDir()
+	_, cards, err := writeCorpus(dir, ix.root, ix.docs)
+	if err != nil {
+		return cli.Envf(env, "index: corpus %s: %v", dir, err)
+	}
+	zg := lookPath(env.Getenv, "zg")
+	if zg == "" {
+		return cli.Envf(env, "index: --semantic needs zvec-grep (zg) on PATH; the corpus is at %s", ix.tilde(dir))
+	}
+	model, err := embeddingModel(env.Getenv)
+	if err != nil {
+		return cli.Envf(env, "index: %v", err)
+	}
+	// A new index is built directly; an existing one goes through --mode auto, because a zvec-grep
+	// server that has served the corpus holds its write lease (see refreshCorpus).
+	args := []string{"index", dir, "--mode", "auto"}
+	verb := "refreshed"
+	switch {
+	case !semanticIndexed(dir):
+		args, verb = []string{"index", dir, "--mode", "direct", "--embedding", model}, "created"
+	case rebuild:
+		args, verb = append(args, "--rebuild", "--embedding", model), "rebuilt"
+	}
+	start := time.Now()
+	if _, _, err := runZg(zg, dir, indexTimeout, args...); err != nil {
+		return cli.Envf(env, "index: semantic index: %v", err)
+	}
+	if !semanticIndexed(dir) {
+		return cli.Envf(env, "index: zg index finished but %s has no %s", ix.tilde(dir), zvecIndexDir)
+	}
+	clearPending(dir)
+	fmt.Fprintf(env.Stdout, "semantic index %s: %d cards at %s in %.1fs (zg %s)\n",
+		verb, cards, ix.tilde(dir), time.Since(start).Seconds(), strings.Join(args[2:], " "))
+	if n := indexedFiles(zg, dir); n >= 0 && n < cards {
+		fmt.Fprintf(env.Stderr, "agent-dry: warning: zg status reports %d of %d cards indexed; recall misses the rest\n", n, cards)
+	}
 	return cli.ExitOK
 }
 

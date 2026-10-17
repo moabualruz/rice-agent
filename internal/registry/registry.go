@@ -40,6 +40,10 @@ type Result struct {
 	// External providers only: whether Entry resolves on PATH now, and the install hint.
 	Installed *bool  `json:"installed,omitempty"`
 	Install   string `json:"install,omitempty"`
+
+	// Semantic marks a zvec-grep recall hit (Source "semantic"); its Score is zvec-grep's fused
+	// rank score, which is not comparable to lexical scores or Threshold.
+	Semantic bool `json:"semantic,omitempty"`
 }
 
 // Options select the sources Load reads.
@@ -348,22 +352,27 @@ func (ix *Index) Search(query string, limit int) []Result {
 	}
 	out := make([]Result, 0, len(ranked))
 	for _, r := range ranked {
-		res := Result{
-			Name:    r.d.Name,
-			Summary: r.d.Summary,
-			Kind:    r.d.Kind,
-			Scope:   r.d.Scope,
-			Entry:   ix.displayEntry(r.d),
-			Source:  r.d.Source,
-			Score:   math.Round(r.s*100) / 100,
-		}
-		if p := r.d.Provider; p != nil {
-			installed := ix.installedAt(p) != ""
-			res.Installed, res.Install = &installed, p.Install
-		}
-		out = append(out, res)
+		out = append(out, ix.result(r.d, math.Round(r.s*100)/100))
 	}
 	return out
+}
+
+// result is the Result for d with score s.
+func (ix *Index) result(d *doc, s float64) Result {
+	res := Result{
+		Name:    d.Name,
+		Summary: d.Summary,
+		Kind:    d.Kind,
+		Scope:   d.Scope,
+		Entry:   ix.displayEntry(d),
+		Source:  d.Source,
+		Score:   s,
+	}
+	if p := d.Provider; p != nil {
+		installed := ix.installedAt(p) != ""
+		res.Installed, res.Install = &installed, p.Install
+	}
+	return res
 }
 
 // wanted returns the best wanted family clearing the threshold, or nil.
