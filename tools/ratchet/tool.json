@@ -1,0 +1,56 @@
+{
+  "schema": "tool/v1",
+  "name": "ratchet",
+  "summary": "Use when a loop must keep a change only if a guarded metric strictly improves",
+  "intents": [
+    "keep change only if metric improves",
+    "verified improvement loop",
+    "autoresearch style ratchet",
+    "revert if tests fail",
+    "benchmark guarded optimization",
+    "measure candidate then keep or revert",
+    "hill climb a metric with git",
+    "noise floor for benchmark comparison",
+    "discard change that does not improve",
+    "experiment log with keep and discard"
+  ],
+  "tags": [
+    "git",
+    "benchmark",
+    "optimization",
+    "loop",
+    "forge"
+  ],
+  "kind": "script",
+  "scope": "global",
+  "entry": "ratchet",
+  "language": "bash",
+  "side_effects": "destructive",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "try: keep, or with --dry-run the plan for an in-scope candidate; init: baseline recorded; status, finish: printed",
+    "1": "try: discard, guard-fail or scope-fail (with --dry-run: would scope-fail); init: guard failed at the baseline; finish: nothing kept",
+    "2": "usage error, including try without a candidate change",
+    "3": "crash (metric failed, timed out or printed no number) or environment error (git missing, not a work tree, dirty at init, wrong branch, branch moved)",
+    "4": "try: trial budget exhausted; nothing is run or changed"
+  },
+  "platforms": [
+    "darwin-arm64",
+    "linux-amd64"
+  ],
+  "requires": [
+    "git >= 2.15",
+    "awk"
+  ],
+  "test": "bash test.sh",
+  "replaces": [
+    "\\|\\|\\s*git\\s+(?:reset\\s+--hard|checkout\\s+--\\s|restore\\s)",
+    "(?s)\\b(?:for|while|until)\\b.*?\\bgit\\s+commit\\b.*?\\bgit\\s+reset\\s+--hard\\b"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "rice-kb:.scratch/agent-ecosystem-v1/issues/03-ratchet-forge-tool.md"
+  }
+}

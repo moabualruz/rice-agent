@@ -1,0 +1,1031 @@
+#!/usr/bin/env bash
+# ratchet: one deterministic step of a verified improvement loop (autoresearch style). After each
+# candidate change it checks scope, commits, runs the guard and the metric, keeps the commit only
+# on a strict improvement beyond the noise floor and otherwise resets its own branch to the best
+# kept commit, logging one row. It never edits code and never loops by itself.
+set -euo pipefail
+
+PROG=ratchet
+RDIR=.ratchet
+CONFIG=$RDIR/config
+RESULTS=$RDIR/results.tsv
+RUNS=$RDIR/runs
+LOCK=$RDIR/lock
+KILL_GRACE=2
+DEFAULT_RUNS=3
+DEFAULT_NOISE=0
+DEFAULT_TIMEOUT=600
+DEFAULT_BUDGET=20
+DEFAULT_TAIL=5
+LOG_TAIL=10
+NL=$'\n'
+
+CHILD_PGID=""
+WATCH_PGID=""
+IN_WAIT=0
+PENDING_SIGNAL=0
+LOCKED=0
+TMPF=""
+CAND=""
+DESC=""
+PHASE=""
+INIT_BRANCH=""
+
+usage() {
+  cat <<'EOF'
+Usage: ratchet init --metric <cmd> --direction lower|higher --guard <cmd> --editable <path>...
+                    [--frozen <path>...] [--runs N] [--noise PERCENT] [--timeout SECONDS]
+                    [--budget TRIALS] [--dry-run]
+       ratchet try -m <description> [--dry-run]
+       ratchet status [--tail N]
+       ratchet finish
+
+One deterministic step of a verified improvement loop (autoresearch style). A harness loop
+(Claude Code or Codex /goal, a Stop hook, a shell loop) or a human makes one candidate change
+in the work tree, then calls `ratchet try`. ratchet measures, keeps only a strict improvement
+that passes the guard, otherwise resets, and logs one row. It never edits code and never loops.
+
+  init    needs a Git work tree with no uncommitted changes. Creates and switches to a new branch
+          ratchet/<YYYYMMDD>-<n> from HEAD, commits .ratchet/config there and measures the
+          baseline: the guard must pass, then the metric runs N times (median and spread). If the
+          baseline fails, the new branch is removed and the original branch checked out again.
+  try     takes the uncommitted candidate change. scope-fail when a changed path is outside
+          --editable, inside --frozen or .ratchet/, or is a file named by a word of the metric or
+          guard command (unless that exact path was given to --editable). Otherwise it commits
+          the candidate, runs the guard (guard-fail on failure), runs the metric N times under
+          --timeout (crash on a non-zero exit, a timeout, no number, or a work tree the
+          measurement left changed) and keeps the commit only when the median beats the best by
+          more than the noise floor; anything else is a discard. A rejected candidate is
+          committed first, so the commit in its row stays recoverable, then the branch is reset
+          to the best kept commit. Prints one line: status metric best floor trial/budget.
+  status  prints the branch, start, baseline, best, trials used and the last rows.
+  finish  prints the kept commits and the diff stat against the start point for human review.
+          It never merges, pushes or switches branches.
+
+Options:
+  --metric <cmd>        bash command whose last non-empty stdout line is one number
+  --direction D         lower or higher is better
+  --guard <cmd>         bash command that must exit 0 (tests); runs before the metric
+  --editable <path>...  paths relative to the repository root a candidate may change ("." = all)
+  --frozen <path>...    paths a candidate must never change, even inside --editable
+  --runs N              metric runs per measurement; the median counts (default 3)
+  --noise PERCENT       noise floor as a percent of the best (default 0); the floor is the
+                        larger of this and the baseline spread (maximum minus minimum)
+  --timeout SECONDS     limit for each guard and metric run (default 600)
+  --budget TRIALS       trials allowed, rejected ones included (default 20)
+  -m <description>      what the candidate changes (try)
+  --tail N              rows shown by status (default 5)
+  --dry-run             init, try: print what would happen; commit, reset and run nothing
+  -h, --help            show this help
+
+Commands run with bash from the repository root, stdin from /dev/null, each in its own process
+group, which is killed on timeout. .ratchet/config is committed on the branch. These stay
+untracked: .ratchet/results.tsv (append only, tab separated: time commit metric median spread
+guard status description; status baseline, keep, discard, crash, guard-fail or scope-fail) and
+the per-trial logs in .ratchet/runs/; they survive a branch switch, and the next init moves them
+to .ratchet/archive/<time>/. ratchet commits only on its own branch, with --no-verify
+and commit.gpgsign=false, and before any reset checks the branch name, the start commit and the
+best kept commit. It never touches other branches, remotes or stashes.
+
+Exit codes:
+  0  try: keep (with --dry-run: the plan for an in-scope candidate); init: baseline recorded;
+     status, finish: printed
+  1  try: discard, guard-fail or scope-fail (with --dry-run: would scope-fail);
+     init: the guard failed at the baseline; finish: nothing was kept
+  2  usage error, including try without a candidate change
+  3  crash (metric failed, timed out or printed no number) or environment error: missing git,
+     not a Git work tree, uncommitted changes at init, not on the ratchet branch, branch moved
+  4  try: budget exhausted; nothing is run or changed
+
+Example:
+  ratchet init --metric "wc -l < notes.txt" --direction lower --guard "bash test.sh" --editable notes.txt
+  ratchet try -m "merge the two install sections"
+EOF
+}
+
+say() { printf '%s: %s\n' "$PROG" "$1" >&2; }
+die() {
+  say "$1"
+  exit "${2:-3}"
+}
+usage_err() {
+  say "$1"
+  printf "Run '%s --help' for usage.\n" "$PROG" >&2
+  exit 2
+}
+
+is_posint() {
+  case "${1:-}" in
+    '' | *[!0-9]* | 0*) return 1 ;;
+  esac
+  return 0
+}
+
+is_percent() {
+  case "${1:-}" in
+    '' | . | *[!0-9.]* | *.*.*) return 1 ;;
+  esac
+  return 0
+}
+
+is_number() {
+  printf '%s\n' "$1" | grep -Eq '^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$'
+}
+
+one_line() { printf '%s' "$1" | tr '\t\r\n' '   '; }
+
+short() { git rev-parse --short=12 "$1"; }
+
+need_tools() {
+  local c v
+  for c in git awk; do
+    command -v "$c" >/dev/null 2>&1 || die "missing dependency: $c" 3
+  done
+  v=$(git --version 2>/dev/null | awk '{ print $3 }')
+  printf '%s\n' "$v" | awk -F. '{ exit !($1 > 2 || ($1 == 2 && $2 >= 15)) }' ||
+    die "git 2.15 or newer required (found ${v:-unknown})" 3
+}
+
+enter_root() {
+  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a Git work tree" 3
+  [ -n "$ROOT" ] || die "not inside a Git work tree" 3
+  cd "$ROOT"
+}
+
+make_tmp() {
+  TMPF=$(mktemp "${TMPDIR:-/tmp}/ratchet.XXXXXX") || die "cannot create a temporary file" 3
+}
+
+check_no_operation() {
+  local f
+  for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    [ ! -e "$(git rev-parse --git-path "$f")" ] || die "a Git operation is in progress ($f); finish or abort it first" 3
+  done
+}
+
+g_commit() { git -c commit.gpgsign=false commit --no-verify -q -m "$1"; }
+
+# norm_path PATH: print PATH relative to the repository root without ./ or a trailing slash.
+norm_path() {
+  local p=$1
+  case "$p" in
+    "$ROOT") p=. ;;
+    "$ROOT"/*) p=${p#"$ROOT"/} ;;
+    /*) return 1 ;;
+  esac
+  while :; do
+    case "$p" in
+      ./*) p=${p#./} ;;
+      */) p=${p%/} ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$p" ] || p=.
+  case "/$p/" in
+    */../* | *//*) return 1 ;;
+  esac
+  printf '%s' "$p"
+}
+
+# in_path PATH PREFIX: PATH equals PREFIX or lies below it; the prefix "." holds everything.
+in_path() {
+  [ "$2" = . ] && return 0
+  [ "$1" = "$2" ] && return 0
+  case "$1" in
+    "$2"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# command_files CMD: print each repository file named by a word of CMD, one per line.
+command_files() {
+  local s w c
+  local -a words=()
+  s=$(printf '%s' "$1" | tr ';|&<>()`' '        ')
+  set -f
+  read -r -a words <<<"$s" || :
+  set +f
+  for w in ${words[@]+"${words[@]}"}; do
+    for c in "$w" "${w##*=}"; do
+      c=${c//\"/}
+      c=${c//\'/}
+      case "$c" in
+        '' | -* | *[*?\$]*) continue ;;
+      esac
+      c=$(norm_path "$c") || continue
+      [ "$c" != . ] && [ -f "$c" ] && printf '%s\n' "$c"
+    done
+  done
+  return 0
+}
+
+join_list() { # separator words...
+  local sep=$1 out="" w
+  shift
+  for w in "$@"; do out=${out:+$out$sep}$w; done
+  printf '%s' "${out:-(none)}"
+}
+
+# --- running commands --------------------------------------------------------------------------
+
+watchdog() { # seconds pid flag
+  local i=0
+  while [ "$i" -lt "$1" ]; do
+    sleep 1
+    kill -0 "$2" 2>/dev/null || exit 0
+    i=$((i + 1))
+  done
+  : >"$3"
+  kill -TERM -- "-$2" 2>/dev/null || :
+  sleep "$KILL_GRACE"
+  kill -KILL -- "-$2" 2>/dev/null || :
+}
+
+# run_bounded SECONDS OUT ERR CMD runs CMD with bash in its own process group; OUT equal to ERR
+# captures both streams in one file. Sets RUN_RC and RUN_TIMEDOUT.
+run_bounded() {
+  local secs=$1 out=$2 err=$3 cmd=$4 flag=$2.timeout pid
+  RUN_TIMEDOUT=0
+  rm -f "$flag"
+  set -m
+  if [ "$out" = "$err" ]; then
+    "${BASH:-bash}" -c "$cmd" </dev/null >"$out" 2>&1 &
+  else
+    "${BASH:-bash}" -c "$cmd" </dev/null >"$out" 2>"$err" &
+  fi
+  pid=$!
+  CHILD_PGID=$pid
+  watchdog "$secs" "$pid" "$flag" </dev/null >/dev/null 2>&1 &
+  WATCH_PGID=$!
+  set +m
+  # The redirection hides the "Terminated" notice of Bash 3.2; a signal trapped meanwhile is only
+  # recorded, then handled below where stderr is visible again.
+  IN_WAIT=1
+  set +e
+  { wait "$pid"; } 2>/dev/null
+  RUN_RC=$?
+  set -e
+  kill -TERM -- "-$WATCH_PGID" 2>/dev/null || :
+  { wait "$WATCH_PGID"; } 2>/dev/null || :
+  IN_WAIT=0
+  if [ "$PENDING_SIGNAL" = 1 ]; then handle_interrupt; fi
+  WATCH_PGID=""
+  if [ -f "$flag" ]; then
+    RUN_TIMEDOUT=1
+    rm -f "$flag"
+    kill -KILL -- "-$pid" 2>/dev/null || :
+  fi
+  CHILD_PGID=""
+}
+
+tail_log() { # file: last lines to stderr, each cut to 200 bytes
+  if [ -s "$1" ]; then
+    printf '%s: last lines of %s:\n' "$PROG" "$1" >&2
+    tail -n "$LOG_TAIL" "$1" | cut -c1-200 >&2
+  fi
+}
+
+# run_guard LABEL: 0 when the guard passes; G_LOG holds its output.
+run_guard() {
+  G_LOG=$RUNS/$1-guard.log
+  run_bounded "$C_TIMEOUT" "$G_LOG" "$G_LOG" "$C_GUARD"
+  if [ "$RUN_TIMEDOUT" = 1 ]; then
+    G_ERR="guard timed out after ${C_TIMEOUT}s"
+    return 1
+  fi
+  if [ "$RUN_RC" -ne 0 ]; then
+    G_ERR="guard exited $RUN_RC"
+    return 1
+  fi
+  return 0
+}
+
+stats() { # comma separated values -> "median spread"
+  printf '%s\n' "$1" | awk -F, '{
+    n = NF
+    for (i = 1; i <= n; i++) v[i] = $i + 0
+    for (i = 2; i <= n; i++) { x = v[i]; j = i - 1; while (j > 0 && v[j] > x) { v[j + 1] = v[j]; j-- } v[j + 1] = x }
+    if (n % 2) m = v[(n + 1) / 2]; else m = (v[n / 2] + v[n / 2 + 1]) / 2
+    printf "%.12g %.12g\n", m, v[n] - v[1]
+  }'
+}
+
+# measure LABEL runs the metric C_RUNS times. Sets M_VALUES, M_MEDIAN and M_SPREAD, or M_ERR and
+# M_LOG and returns 1.
+measure() {
+  local k=1 out err num
+  M_VALUES=""
+  M_MEDIAN=""
+  M_SPREAD=""
+  M_ERR=""
+  M_LOG=""
+  while [ "$k" -le "$C_RUNS" ]; do
+    out=$RUNS/$1-metric-$k.out
+    err=$RUNS/$1-metric-$k.err
+    run_bounded "$C_TIMEOUT" "$out" "$err" "$C_METRIC"
+    M_LOG=$err
+    if [ "$RUN_TIMEDOUT" = 1 ]; then
+      M_ERR="metric run $k timed out after ${C_TIMEOUT}s"
+      return 1
+    fi
+    if [ "$RUN_RC" -ne 0 ]; then
+      M_ERR="metric run $k exited $RUN_RC"
+      return 1
+    fi
+    num=$(awk 'NF { l = $0 } END { sub(/^[ \t\r]+/, "", l); sub(/[ \t\r]+$/, "", l); print l }' "$out")
+    if ! is_number "$num"; then
+      M_ERR="metric run $k printed no number on its last line"
+      M_LOG=$out
+      return 1
+    fi
+    M_VALUES=${M_VALUES:+$M_VALUES,}$num
+    k=$((k + 1))
+  done
+  read -r M_MEDIAN M_SPREAD <<<"$(stats "$M_VALUES")"
+}
+
+noise_floor() { # best -> max(|best| * noise / 100, baseline spread)
+  awk -v b="$1" -v p="$C_NOISE" -v s="$BASE_SPREAD" 'BEGIN {
+    a = b + 0; if (a < 0) a = -a
+    f = a * (p + 0) / 100; if (s + 0 > f) f = s + 0
+    printf "%.12g\n", f
+  }'
+}
+
+improved() { # median best floor: 0 when the median beats best by more than floor
+  awk -v m="$1" -v b="$2" -v f="$3" -v d="$C_DIRECTION" 'BEGIN {
+    g = (d == "lower") ? (b + 0) - (m + 0) : (m + 0) - (b + 0)
+    exit !(g > f + 0)
+  }'
+}
+
+# --- state -------------------------------------------------------------------------------------
+
+load_config() {
+  local text line key val cur
+  if ! text=$(git show "HEAD:$CONFIG" 2>/dev/null); then
+    cur=$(git symbolic-ref -q --short HEAD || printf 'a detached HEAD')
+    die "no ratchet on $cur (no committed $CONFIG); ratchet works only on a ratchet/ branch made by ratchet init" 3
+  fi
+  C_VERSION="" C_BRANCH="" C_START="" C_BASE="" C_METRIC="" C_GUARD="" C_DIRECTION=""
+  C_RUNS="" C_NOISE="" C_TIMEOUT="" C_BUDGET=""
+  EDITABLE=()
+  FROZEN=()
+  CMDFILES=()
+  while IFS= read -r line; do
+    case "$line" in
+      '' | '#'*) continue ;;
+    esac
+    key=${line%%=*}
+    val=${line#*=}
+    case "$key" in
+      version) C_VERSION=$val ;;
+      branch) C_BRANCH=$val ;;
+      start) C_START=$val ;;
+      base) C_BASE=$val ;;
+      metric) C_METRIC=$val ;;
+      guard) C_GUARD=$val ;;
+      direction) C_DIRECTION=$val ;;
+      runs) C_RUNS=$val ;;
+      noise) C_NOISE=$val ;;
+      timeout) C_TIMEOUT=$val ;;
+      budget) C_BUDGET=$val ;;
+      editable) EDITABLE+=("$val") ;;
+      frozen) FROZEN+=("$val") ;;
+      command_file) CMDFILES+=("$val") ;;
+    esac
+  done <<<"$text"
+  if [ "$C_VERSION" != 1 ] || [ -z "$C_METRIC" ] || [ -z "$C_GUARD" ] || [ "${#EDITABLE[@]}" -eq 0 ] ||
+    ! is_posint "$C_RUNS" || ! is_posint "$C_TIMEOUT" || ! is_posint "$C_BUDGET" || ! is_percent "$C_NOISE"; then
+    die "$CONFIG on HEAD is incomplete or invalid" 3
+  fi
+  case "$C_BRANCH" in
+    ratchet/?*) ;;
+    *) die "$CONFIG names branch '$C_BRANCH', not a ratchet/ branch" 3 ;;
+  esac
+  case "$C_DIRECTION" in
+    lower | higher) ;;
+    *) die "$CONFIG has direction '$C_DIRECTION'" 3 ;;
+  esac
+  git rev-parse -q --verify "$C_START^{commit}" >/dev/null || die "start commit $C_START from $CONFIG does not exist" 3
+}
+
+load_results() {
+  local line
+  [ -f "$RESULTS" ] || die "$RESULTS is missing; this untracked log holds the best kept commit, so ratchet cannot continue" 3
+  line=$(awk -F'\t' '
+    NR == 1 { next }
+    $7 == "baseline" && bc == "" { bc = $2; bm = $4; bs = $5 }
+    $7 == "keep" || $7 == "baseline" { c = $2; m = $4 }
+    $7 != "baseline" { n++; s[$7]++ }
+    END {
+      if (bc == "") exit 1
+      printf "%s %s %s %s %s %d %d %d %d %d %d\n", c, m, bc, bm, bs, n, s["keep"], s["discard"], s["guard-fail"], s["crash"], s["scope-fail"]
+    }' "$RESULTS") || die "$RESULTS has no baseline row" 3
+  read -r BEST_COMMIT BEST BASE_COMMIT BASELINE BASE_SPREAD TRIALS N_KEEP N_DISCARD N_GUARD N_CRASH N_SCOPE <<<"$line"
+}
+
+log_row() { # commit values median spread guard status description
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "$5" "$6" \
+    "$(one_line "$7")" >>"$RESULTS"
+}
+
+# verify_branch: HEAD is the ratchet branch named in the config and sits on the best kept commit,
+# which lies on top of the recorded start commit. Sets BEST_FULL.
+verify_branch() {
+  local cur
+  cur=$(git symbolic-ref -q --short HEAD) || die "HEAD is detached; ratchet works only on its branch $C_BRANCH" 3
+  case "$cur" in
+    ratchet/?*) ;;
+    *) die "on branch $cur; ratchet works only on its own ratchet/ branch, refusing" 3 ;;
+  esac
+  [ "$cur" = "$C_BRANCH" ] || die "on branch $cur, but this ratchet belongs to $C_BRANCH; refusing" 3
+  BEST_FULL=$(git rev-parse -q --verify "$BEST_COMMIT^{commit}") ||
+    die "best kept commit $BEST_COMMIT from $RESULTS does not exist" 3
+  git merge-base --is-ancestor "$C_START" "$BEST_FULL" ||
+    die "best kept commit $BEST_COMMIT is not on top of start $C_START; refusing" 3
+  [ "$(git rev-parse HEAD)" = "$BEST_FULL" ] ||
+    die "HEAD is not the best kept commit $BEST_COMMIT (the branch moved outside ratchet); refusing" 3
+}
+
+# safe_reset: reset the ratchet branch to the best kept commit after checking it again.
+safe_reset() {
+  local cur
+  cur=$(git symbolic-ref -q --short HEAD) || die "HEAD is detached; refusing to reset" 3
+  case "$cur" in
+    ratchet/?*) ;;
+    *) die "refusing to reset branch $cur" 3 ;;
+  esac
+  [ "$cur" = "$C_BRANCH" ] || die "on branch $cur, not $C_BRANCH; refusing to reset" 3
+  git merge-base --is-ancestor "$C_START" "$BEST_FULL" || die "best kept commit is not on top of start; refusing to reset" 3
+  git merge-base --is-ancestor "$BEST_FULL" HEAD || die "best kept commit is not an ancestor of HEAD; refusing to reset" 3
+  git reset -q --hard "$BEST_FULL"
+}
+
+acquire_lock() {
+  local other=""
+  mkdir -p "$RDIR"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    if [ -f "$LOCK/pid" ]; then IFS= read -r other <"$LOCK/pid" || :; fi
+    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+      die "another ratchet (pid $other) is working in this work tree" 3
+    fi
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || die "cannot create $LOCK" 3
+  fi
+  printf '%s\n' "$$" >"$LOCK/pid"
+  LOCKED=1
+}
+
+# collect_changes fills CHANGED (every changed path, both sides of a rename) and UNTRACKED.
+collect_changes() {
+  local entry xy p
+  CHANGED=()
+  UNTRACKED=()
+  git status --porcelain -z --untracked-files=all >"$TMPF" || die "git status failed" 3
+  while IFS= read -r -d '' entry; do
+    xy=${entry:0:2}
+    p=${entry:3}
+    CHANGED+=("$p")
+    [ "$xy" != "??" ] || UNTRACKED+=("$p")
+    case "$xy" in
+      R* | C*)
+        IFS= read -r -d '' p || :
+        CHANGED+=("$p")
+        ;;
+    esac
+  done <"$TMPF"
+}
+
+# remove_leftovers deletes the untracked files listed in UNTRACKED (never ratchet state); they
+# were created after the work tree was last clean, by the candidate or the measured commands.
+remove_leftovers() {
+  local p
+  for p in ${UNTRACKED[@]+"${UNTRACKED[@]}"}; do
+    case "$p" in
+      "$RDIR" | "$RDIR"/* | */) continue ;;
+    esac
+    rm -f -- "$p"
+  done
+}
+
+list_some() { # words: at most 5, then a count
+  local n=0 out="" w
+  for w in "$@"; do
+    n=$((n + 1))
+    [ "$n" -le 5 ] && out=${out:+$out, }$w
+  done
+  [ "$n" -le 5 ] || out="$out and $((n - 5)) more"
+  printf '%s' "$out"
+}
+
+# scope_check fills VIOLATIONS with "path (reason)" for every changed path out of scope.
+scope_check() {
+  local p f hit ok
+  VIOLATIONS=()
+  for p in ${CHANGED[@]+"${CHANGED[@]}"}; do
+    hit=""
+    case "$p" in
+      "$RDIR" | "$RDIR"/*) hit="ratchet state" ;;
+    esac
+    for f in ${FROZEN[@]+"${FROZEN[@]}"}; do
+      [ -n "$hit" ] && break
+      if in_path "$p" "$f"; then hit="frozen $f"; fi
+    done
+    for f in ${CMDFILES[@]+"${CMDFILES[@]}"}; do
+      [ -n "$hit" ] && break
+      if [ "$p" = "$f" ]; then hit="named by the metric or guard command"; fi
+    done
+    if [ -z "$hit" ]; then
+      ok=0
+      for f in "${EDITABLE[@]}"; do
+        if in_path "$p" "$f"; then
+          ok=1
+          break
+        fi
+      done
+      [ "$ok" = 1 ] || hit="outside --editable"
+    fi
+    [ -z "$hit" ] || VIOLATIONS+=("$p ($hit)")
+  done
+}
+
+# commit_candidate MESSAGE commits every change except untracked ratchet state; sets CAND.
+commit_candidate() {
+  CAND=""
+  git add -A || die "git add failed; the candidate is still in the work tree" 3
+  git rm -r -q --cached --ignore-unmatch -- "$RESULTS" "$RUNS" "$LOCK" >/dev/null ||
+    die "could not keep ratchet state out of the commit" 3
+  if git diff --cached --quiet; then return 0; fi
+  g_commit "$1" || die "git commit failed; the candidate is still in the work tree" 3
+  CAND=$(git rev-parse HEAD)
+}
+
+# --- signals -----------------------------------------------------------------------------------
+
+on_exit() {
+  if [ -n "$CHILD_PGID" ]; then kill -KILL -- "-$CHILD_PGID" 2>/dev/null || :; fi
+  if [ -n "$WATCH_PGID" ]; then kill -KILL -- "-$WATCH_PGID" 2>/dev/null || :; fi
+  if [ "$LOCKED" = 1 ]; then rm -rf "$LOCK"; fi
+  if [ -n "$TMPF" ]; then rm -f "$TMPF"; fi
+}
+
+on_signal() {
+  if [ "$IN_WAIT" = 1 ]; then
+    PENDING_SIGNAL=1
+    return 0
+  fi
+  handle_interrupt
+}
+
+# handle_interrupt stops the running command, undoes the unfinished trial or init and exits 3.
+handle_interrupt() {
+  trap - INT TERM HUP
+  if [ -n "$CHILD_PGID" ]; then kill -KILL -- "-$CHILD_PGID" 2>/dev/null || :; fi
+  if [ -n "$WATCH_PGID" ]; then kill -KILL -- "-$WATCH_PGID" 2>/dev/null || :; fi
+  CHILD_PGID=""
+  WATCH_PGID=""
+  case "$PHASE" in
+    try)
+      if [ -n "$CAND" ]; then
+        collect_changes
+        safe_reset
+        remove_leftovers
+        log_row "$(short "$CAND")" - - - - crash "$DESC (interrupted)"
+      fi
+      ;;
+    init)
+      if [ -n "$INIT_BRANCH" ]; then rollback_init; fi
+      ;;
+  esac
+  say "interrupted${CAND:+; reset to the best kept commit and logged the trial as crash}"
+  exit 3
+}
+
+trap on_exit EXIT
+trap on_signal INT TERM HUP
+
+# --- init --------------------------------------------------------------------------------------
+
+next_branch() {
+  local d n=1
+  d=$(date +%Y%m%d)
+  while git show-ref --verify --quiet "refs/heads/ratchet/$d-$n"; do n=$((n + 1)); done
+  printf 'ratchet/%s-%s' "$d" "$n"
+}
+
+# rollback_init undoes a failed init: back to the original branch, the new branch removed.
+rollback_init() {
+  local cur
+  cur=$(git symbolic-ref -q --short HEAD || :)
+  if [ "$cur" = "$INIT_BRANCH" ]; then
+    collect_changes
+    remove_leftovers
+    git reset -q --hard
+    if [ "$C_BASE" = "(detached)" ]; then
+      git checkout -q --detach "$C_START"
+    else
+      git checkout -q "$C_BASE"
+    fi
+  fi
+  if [ "$(git rev-parse -q --verify "$INIT_BRANCH~1" || :)" = "$C_START" ]; then
+    git branch -q -D "$INIT_BRANCH"
+  else
+    say "left branch $INIT_BRANCH in place: it no longer sits one commit on top of the start"
+  fi
+  rm -f "$RESULTS"
+  rm -rf "$RUNS" "$LOCK"
+  rmdir "$RDIR" 2>/dev/null || :
+  INIT_BRANCH=""
+}
+
+cmd_init() {
+  local dry=0 p n f cmdf skip branch archive
+  local -a edit_in=() frozen_in=()
+  C_METRIC="" C_GUARD="" C_DIRECTION="" C_RUNS=$DEFAULT_RUNS C_NOISE=$DEFAULT_NOISE
+  C_TIMEOUT=$DEFAULT_TIMEOUT C_BUDGET=$DEFAULT_BUDGET
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --*=*) set -- "${1%%=*}" "${1#*=}" "${@:2}" ;;
+    esac
+    case "$1" in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      --dry-run)
+        dry=1
+        shift
+        ;;
+      --editable | --frozen)
+        f=$1
+        shift
+        [ "$#" -gt 0 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ] || usage_err "$f needs at least one path"
+        while [ "$#" -gt 0 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ]; do
+          if [ "$f" = --editable ]; then edit_in+=("$1"); else frozen_in+=("$1"); fi
+          shift
+        done
+        ;;
+      --metric | --guard | --direction | --runs | --noise | --timeout | --budget)
+        [ "$#" -ge 2 ] || usage_err "$1 needs a value"
+        case "$1" in
+          --metric) C_METRIC=$2 ;;
+          --guard) C_GUARD=$2 ;;
+          --direction) C_DIRECTION=$2 ;;
+          --runs) C_RUNS=$2 ;;
+          --noise) C_NOISE=$2 ;;
+          --timeout) C_TIMEOUT=$2 ;;
+          --budget) C_BUDGET=$2 ;;
+        esac
+        shift 2
+        ;;
+      *) usage_err "init: unknown argument: $1" ;;
+    esac
+  done
+  [ -n "$C_METRIC" ] || usage_err "init needs --metric <cmd>"
+  [ -n "$C_GUARD" ] || usage_err "init needs --guard <cmd>"
+  [ "${#edit_in[@]}" -gt 0 ] || usage_err "init needs --editable <path>..."
+  case "$C_DIRECTION" in
+    lower | higher) ;;
+    '') usage_err "init needs --direction lower|higher" ;;
+    *) usage_err "--direction must be lower or higher" ;;
+  esac
+  case "$C_METRIC$C_GUARD" in
+    *"$NL"*) usage_err "--metric and --guard must be one line each" ;;
+  esac
+  is_posint "$C_RUNS" || usage_err "--runs needs a positive integer"
+  is_posint "$C_TIMEOUT" || usage_err "--timeout needs a positive number of seconds"
+  is_posint "$C_BUDGET" || usage_err "--budget needs a positive number of trials"
+  is_percent "$C_NOISE" || usage_err "--noise needs a non-negative percent such as 2 or 0.5"
+
+  need_tools
+  enter_root
+  check_no_operation
+  C_START=$(git rev-parse -q --verify 'HEAD^{commit}') || die "the repository has no commits yet" 3
+  if git cat-file -e "HEAD:$CONFIG" 2>/dev/null; then
+    die "HEAD already carries a ratchet ($CONFIG); finish it and switch back to your branch first" 3
+  fi
+  # The untracked log of an earlier ratchet (.ratchet/ after switching back) is not a change.
+  if [ -n "$(git status --porcelain --untracked-files=all | grep -v "^?? $RDIR/" || :)" ]; then
+    die "uncommitted changes in the work tree; commit or stash them yourself, then run init" 3
+  fi
+  C_BASE=$(git symbolic-ref -q --short HEAD || printf '(detached)')
+  archive=""
+  if [ -e "$RESULTS" ] || [ -e "$RUNS" ]; then archive=$RDIR/archive/$(date -u +%Y%m%dT%H%M%SZ)-$$; fi
+
+  EDITABLE=()
+  FROZEN=()
+  CMDFILES=()
+  for p in "${edit_in[@]}"; do
+    n=$(norm_path "$p") || usage_err "--editable $p is not a path inside the repository"
+    case "$n" in
+      "$RDIR" | "$RDIR"/*) usage_err "--editable must not include $RDIR" ;;
+    esac
+    EDITABLE+=("$n")
+  done
+  for p in ${frozen_in[@]+"${frozen_in[@]}"}; do
+    n=$(norm_path "$p") || usage_err "--frozen $p is not a path inside the repository"
+    FROZEN+=("$n")
+  done
+  while IFS= read -r cmdf; do
+    [ -n "$cmdf" ] || continue
+    skip=0
+    for p in "${EDITABLE[@]}" ${CMDFILES[@]+"${CMDFILES[@]}"}; do
+      if [ "$p" = "$cmdf" ]; then skip=1; fi
+    done
+    [ "$skip" = 1 ] || CMDFILES+=("$cmdf")
+  done <<<"$(command_files "$C_METRIC"; command_files "$C_GUARD")"
+
+  branch=$(next_branch)
+  if [ "$dry" = 1 ]; then
+    printf 'dry run: would create branch %s from %s (%s)\n' "$branch" "$(short "$C_START")" "$C_BASE"
+    printf 'editable: %s\n' "$(join_list ' ' "${EDITABLE[@]}")"
+    printf 'frozen: %s\n' "$(join_list ' ' ${FROZEN[@]+"${FROZEN[@]}"})"
+    printf 'command files (frozen): %s\n' "$(join_list ' ' ${CMDFILES[@]+"${CMDFILES[@]}"})"
+    if [ -n "$archive" ]; then printf 'would move the earlier untracked log to %s/\n' "$archive"; fi
+    printf 'would commit %s, run the guard once and the metric %s times for the baseline\n' "$CONFIG" "$C_RUNS"
+    exit 0
+  fi
+
+  make_tmp
+  PHASE=init
+  git checkout -q -b "$branch" || die "could not create branch $branch" 3
+  INIT_BRANCH=$branch
+  C_BRANCH=$branch
+  mkdir -p "$RDIR"
+  if [ -n "$archive" ]; then
+    mkdir -p "$archive"
+    for p in "$RESULTS" "$RUNS"; do
+      if [ -e "$p" ]; then mv -- "$p" "$archive/"; fi
+    done
+    say "moved the earlier untracked log to $archive/"
+  fi
+  {
+    printf '# ratchet configuration; committed on the ratchet branch, read from HEAD\n'
+    printf 'version=1\nbranch=%s\nstart=%s\nbase=%s\n' "$branch" "$C_START" "$C_BASE"
+    printf 'metric=%s\nguard=%s\ndirection=%s\n' "$C_METRIC" "$C_GUARD" "$C_DIRECTION"
+    printf 'runs=%s\nnoise=%s\ntimeout=%s\nbudget=%s\n' "$C_RUNS" "$C_NOISE" "$C_TIMEOUT" "$C_BUDGET"
+    for p in "${EDITABLE[@]}"; do printf 'editable=%s\n' "$p"; done
+    for p in ${FROZEN[@]+"${FROZEN[@]}"}; do printf 'frozen=%s\n' "$p"; done
+    for p in ${CMDFILES[@]+"${CMDFILES[@]}"}; do printf 'command_file=%s\n' "$p"; done
+  } >"$CONFIG"
+  printf '# ratchet state that stays untracked\nresults.tsv\nruns/\nlock/\narchive/\n' >"$RDIR/.gitignore"
+  if ! git add -f -- "$CONFIG" "$RDIR/.gitignore" || ! g_commit "ratchet: start $branch"; then
+    rollback_init
+    die "could not commit $CONFIG; nothing changed" 3
+  fi
+  mkdir -p "$RUNS"
+  printf 'time\tcommit\tmetric\tmedian\tspread\tguard\tstatus\tdescription\n' >"$RESULTS"
+
+  if ! run_guard baseline; then
+    say "baseline: $G_ERR; the guard must pass before any trial"
+    tail_log "$G_LOG"
+    rollback_init
+    say "removed $branch and returned to $C_BASE"
+    exit 1
+  fi
+  if ! measure baseline; then
+    say "baseline: $M_ERR"
+    tail_log "$M_LOG"
+    rollback_init
+    say "removed $branch and returned to $C_BASE"
+    exit 3
+  fi
+  collect_changes
+  if [ "${#CHANGED[@]}" -gt 0 ]; then
+    say "baseline: the guard or metric changed the work tree ($(list_some "${CHANGED[@]}")); ignore their outputs in .gitignore"
+    rollback_init
+    say "removed $branch and returned to $C_BASE"
+    exit 3
+  fi
+  log_row "$(short HEAD)" "$M_VALUES" "$M_MEDIAN" "$M_SPREAD" pass baseline "baseline"
+  INIT_BRANCH=""
+  PHASE=""
+  BASE_SPREAD=$M_SPREAD
+  printf 'branch: %s (start %s on %s)\n' "$branch" "$(short "$C_START")" "$C_BASE"
+  printf 'frozen: %s\n' "$(join_list ' ' ${FROZEN[@]+"${FROZEN[@]}"} ${CMDFILES[@]+"${CMDFILES[@]}"})"
+  printf 'baseline metric=%s spread=%s runs=%s best=%s floor=%s trial=0/%s\n' "$M_MEDIAN" "$M_SPREAD" \
+    "$M_VALUES" "$M_MEDIAN" "$(noise_floor "$M_MEDIAN")" "$C_BUDGET"
+}
+
+# --- try ---------------------------------------------------------------------------------------
+
+# reject STATUS VALUES MEDIAN SPREAD GUARD EXIT: reset to the best kept commit, log, print, exit.
+reject() {
+  local commit=-
+  if [ -n "$CAND" ]; then commit=$(short "$CAND"); fi
+  collect_changes
+  safe_reset
+  remove_leftovers
+  log_row "$commit" "$2" "$3" "$4" "$5" "$1" "$DESC"
+  CAND=""
+  printf '%s metric=%s best=%s floor=%s trial=%s/%s\n' "$1" "$3" "$BEST" "$FLOOR" "$TRIAL" "$C_BUDGET"
+  exit "$6"
+}
+
+cmd_try() {
+  local dry=0 have_m=0 label v
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      --dry-run) dry=1 ;;
+      -m | --message)
+        [ "$#" -ge 2 ] || usage_err "$1 needs a description"
+        DESC=$2
+        have_m=1
+        shift
+        ;;
+      --message=*)
+        DESC=${1#--message=}
+        have_m=1
+        ;;
+      *) usage_err "try: unknown argument: $1" ;;
+    esac
+    shift
+  done
+  [ "$have_m" = 1 ] && [ -n "$DESC" ] || usage_err "try needs -m <description>"
+  DESC=$(one_line "$DESC")
+
+  need_tools
+  enter_root
+  load_config
+  if [ "$dry" = 0 ]; then acquire_lock; fi
+  load_results
+  verify_branch
+  check_no_operation
+  FLOOR=$(noise_floor "$BEST")
+  if [ "$TRIALS" -ge "$C_BUDGET" ]; then
+    printf 'budget-exhausted metric=- best=%s floor=%s trial=%s/%s\n' "$BEST" "$FLOOR" "$TRIALS" "$C_BUDGET"
+    say "all $C_BUDGET trials are used; run ratchet finish to review the kept commits"
+    exit 4
+  fi
+  make_tmp
+  collect_changes
+  [ "${#CHANGED[@]}" -gt 0 ] || usage_err "no candidate change in the work tree; change an --editable path, then run try"
+  TRIAL=$((TRIALS + 1))
+  label=$(printf '%03d' "$TRIAL")
+  scope_check
+
+  if [ "$dry" = 1 ]; then
+    if [ "${#VIOLATIONS[@]}" -gt 0 ]; then
+      printf 'dry run: trial %s/%s would scope-fail and reset to %s:\n' "$TRIAL" "$C_BUDGET" "$BEST_COMMIT"
+      for v in "${VIOLATIONS[@]}"; do printf '  %s\n' "$v"; done
+      exit 1
+    fi
+    printf 'dry run: trial %s/%s would commit %s changed paths (%s) and run the guard: %s\n' \
+      "$TRIAL" "$C_BUDGET" "${#CHANGED[@]}" "$(list_some "${CHANGED[@]}")" "$C_GUARD"
+    printf 'dry run: then the metric %s times with a %ss limit: %s\n' "$C_RUNS" "$C_TIMEOUT" "$C_METRIC"
+    printf 'dry run: keep only if the median is %s than %s by more than %s; otherwise reset to %s\n' \
+      "$([ "$C_DIRECTION" = lower ] && printf lower || printf higher)" "$BEST" "$FLOOR" "$BEST_COMMIT"
+    exit 0
+  fi
+
+  PHASE=try
+  mkdir -p "$RUNS"
+  if [ "${#VIOLATIONS[@]}" -gt 0 ]; then
+    commit_candidate "ratchet trial $TRIAL scope-fail: $DESC"
+    for v in "${VIOLATIONS[@]}"; do say "scope: $v"; done
+    reject scope-fail - - - - 1
+  fi
+  commit_candidate "ratchet trial $TRIAL: $DESC"
+  [ -n "$CAND" ] || die "nothing to commit after staging the candidate" 3
+  if ! run_guard "$label"; then
+    say "$G_ERR"
+    tail_log "$G_LOG"
+    reject guard-fail - - - fail 1
+  fi
+  if ! measure "$label"; then
+    say "crash: $M_ERR"
+    tail_log "$M_LOG"
+    reject crash "${M_VALUES:--}" - - pass 3
+  fi
+  collect_changes
+  if [ "${#CHANGED[@]}" -gt 0 ]; then
+    say "crash: the guard or metric changed the work tree ($(list_some "${CHANGED[@]}")); ignore their outputs in .gitignore"
+    reject crash "$M_VALUES" "$M_MEDIAN" "$M_SPREAD" pass 3
+  fi
+  if improved "$M_MEDIAN" "$BEST" "$FLOOR"; then
+    log_row "$(short "$CAND")" "$M_VALUES" "$M_MEDIAN" "$M_SPREAD" pass keep "$DESC"
+    CAND=""
+    BEST=$M_MEDIAN
+    printf 'keep metric=%s best=%s floor=%s trial=%s/%s\n' "$M_MEDIAN" "$BEST" "$(noise_floor "$BEST")" "$TRIAL" "$C_BUDGET"
+    exit 0
+  fi
+  reject discard "$M_VALUES" "$M_MEDIAN" "$M_SPREAD" pass 1
+}
+
+# --- status and finish -------------------------------------------------------------------------
+
+cmd_status() {
+  local tail_n=$DEFAULT_TAIL cur best_full head_state dirty
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      --tail)
+        [ "$#" -ge 2 ] || usage_err "--tail needs a number"
+        tail_n=$2
+        shift
+        ;;
+      --tail=*) tail_n=${1#--tail=} ;;
+      *) usage_err "status: unknown argument: $1" ;;
+    esac
+    shift
+  done
+  case "$tail_n" in
+    '' | *[!0-9]*) usage_err "--tail needs a non-negative integer" ;;
+  esac
+  need_tools
+  enter_root
+  load_config
+  load_results
+  cur=$(git symbolic-ref -q --short HEAD || printf '(detached)')
+  best_full=$(git rev-parse -q --verify "$BEST_COMMIT^{commit}" || :)
+  if [ -z "$best_full" ]; then
+    head_state="best kept commit $BEST_COMMIT is missing"
+  elif [ "$(git rev-parse HEAD)" = "$best_full" ]; then
+    head_state="at the best kept commit"
+  else
+    head_state="not at the best kept commit; ratchet try will refuse"
+  fi
+  dirty=$(git status --porcelain --untracked-files=all | awk 'END { print NR }')
+  printf 'branch: %s%s\n' "$C_BRANCH" "$([ "$cur" = "$C_BRANCH" ] || printf ' (HEAD is on %s)' "$cur")"
+  printf 'start: %s on %s\n' "$(short "$C_START")" "$C_BASE"
+  printf 'metric: %s (%s is better, %s runs, %ss limit)\n' "$C_METRIC" "$C_DIRECTION" "$C_RUNS" "$C_TIMEOUT"
+  printf 'guard: %s\n' "$C_GUARD"
+  printf 'editable: %s\n' "$(join_list ' ' "${EDITABLE[@]}")"
+  printf 'frozen: %s\n' "$(join_list ' ' ${FROZEN[@]+"${FROZEN[@]}"} ${CMDFILES[@]+"${CMDFILES[@]}"})"
+  printf 'baseline: %s (spread %s) at %s\n' "$BASELINE" "$BASE_SPREAD" "$BASE_COMMIT"
+  printf 'best: %s at %s (%s kept)\n' "$BEST" "$BEST_COMMIT" "$N_KEEP"
+  printf 'noise floor: %s (noise %s%%, baseline spread %s)\n' "$(noise_floor "$BEST")" "$C_NOISE" "$BASE_SPREAD"
+  printf 'trials: %s of %s (keep %s, discard %s, guard-fail %s, crash %s, scope-fail %s)\n' "$TRIALS" "$C_BUDGET" \
+    "$N_KEEP" "$N_DISCARD" "$N_GUARD" "$N_CRASH" "$N_SCOPE"
+  printf 'head: %s\n' "$head_state"
+  printf 'work tree: %s\n' "$([ "$dirty" -eq 0 ] && printf clean || printf '%s changed paths (a candidate)' "$dirty")"
+  if [ "$tail_n" -gt 0 ]; then
+    printf 'last rows of %s:\n' "$RESULTS"
+    head -n 1 "$RESULTS" | cut -c1-240
+    awk 'NR > 1' "$RESULTS" | tail -n "$tail_n" | cut -c1-240
+  fi
+}
+
+cmd_finish() {
+  local best_full base_full
+  case "${1:-}" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    '') ;;
+    *) usage_err "finish takes no arguments" ;;
+  esac
+  need_tools
+  enter_root
+  load_config
+  load_results
+  best_full=$(git rev-parse -q --verify "$BEST_COMMIT^{commit}") || die "best kept commit $BEST_COMMIT does not exist" 3
+  base_full=$(git rev-parse -q --verify "$BASE_COMMIT^{commit}") || die "baseline commit $BASE_COMMIT does not exist" 3
+  make_tmp
+  printf 'branch: %s\nstart: %s on %s\n' "$C_BRANCH" "$(short "$C_START")" "$C_BASE"
+  printf 'baseline: %s\nbest: %s at %s (%s is better)\n' "$BASELINE" "$BEST" "$BEST_COMMIT" "$C_DIRECTION"
+  printf 'trials: %s of %s (keep %s, discard %s, guard-fail %s, crash %s, scope-fail %s)\n' "$TRIALS" "$C_BUDGET" \
+    "$N_KEEP" "$N_DISCARD" "$N_GUARD" "$N_CRASH" "$N_SCOPE"
+  git log --reverse --abbrev=12 --format='%h%x09%s' "$base_full..$best_full" >"$TMPF"
+  if [ ! -s "$TMPF" ]; then
+    printf 'kept commits: none; nothing beat the baseline\n'
+    exit 1
+  fi
+  printf 'kept commits (oldest first):\n'
+  awk -F'\t' 'NR == FNR { if ($7 == "keep") m[$2] = $4; next }
+    { printf "  %s  metric %s  %s\n", $1, ($1 in m) ? m[$1] : "?", $2 }' "$RESULTS" "$TMPF"
+  printf 'diff stat against the start point (without %s/):\n' "$RDIR"
+  git diff --stat "$C_START" "$best_full" -- . ":(exclude)$RDIR" | sed 's/^/  /'
+  printf 'review: git diff %s %s -- . %s\n' "$(short "$C_START")" "$(short "$best_full")" "':(exclude)$RDIR'"
+  printf 'ratchet never merges or pushes: cherry-pick the kept commits (not the start commit that adds %s/) yourself\n' "$RDIR"
+}
+
+main() {
+  local sub=${1:-}
+  case "$sub" in
+    -h | --help | help)
+      usage
+      exit 0
+      ;;
+    '') usage_err "missing subcommand: init, try, status or finish" ;;
+  esac
+  shift
+  case "$sub" in
+    init) cmd_init "$@" ;;
+    try) cmd_try "$@" ;;
+    status) cmd_status "$@" ;;
+    finish) cmd_finish "$@" ;;
+    *) usage_err "unknown subcommand: $sub" ;;
+  esac
+}
+
+main "$@"
