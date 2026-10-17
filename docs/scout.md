@@ -15,8 +15,10 @@ candidate and a published decision, never in code.
 1. State the capability in one sentence and the hard constraints: target platforms, language and
    runtime limits (no Python runtime for non-Python projects), local-first, license allowlist,
    offline use, maintenance budget.
-2. Collect candidates from primary sources: `gh search repos <terms> --sort stars`, awesome lists
-   (seeds only), upstream documentation, and tools already installed (`agent-dry find`, `command -v`).
+2. Check what the owner already runs first: `agent-dry find`, the global exceptions (zvec-grep,
+   herdr), owner products such as rice-edit and Rice Observe, and installed CLIs (`command -v`).
+   Reuse one of those before looking outside. Then collect candidates from primary sources:
+   `gh search repos <terms> --sort stars`, awesome lists (seeds only) and upstream documentation.
 3. Gather evidence per candidate with one command:
    `oss-evidence <owner/repo>... [--package <ecosystem>:<name>] --json`
    (GitHub metadata, latest release, OpenSSF Scorecard and its Maintained check, deps.dev dependents,

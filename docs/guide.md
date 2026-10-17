@@ -102,8 +102,9 @@ where the consumer already uses it, never Python.
 
 ## Code
 
-- Search the codebase before writing a helper, constant, type or schema (exact names with `rg`,
-  concepts with semantic search); extend what exists.
+- Search the codebase before writing a helper, constant, type or schema, with zvec-grep (`zg query`
+  or its MCP tools for concepts, `zg query --rg` or `rg` for exact names); extend what exists.
+  agent-dry never indexes project code: zvec-grep owns code search, agent-dry only its registry.
 - Keep one source of truth for every rule, constant, schema and procedure. Generate derived copies
   instead of hand-copying them, and point documents at the owner instead of restating it.
 - DRY is about knowledge, not similar-looking text. Two lines that encode different facts stay
