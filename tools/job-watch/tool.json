@@ -13,7 +13,12 @@
     "poll until command finishes",
     "avoid sleep poll loop"
   ],
-  "tags": ["background", "process", "poll", "wait"],
+  "tags": [
+    "background",
+    "process",
+    "poll",
+    "wait"
+  ],
   "kind": "script",
   "scope": "global",
   "entry": "job-watch",
@@ -27,8 +32,15 @@
     "3": "environment failure: missing dependency, unwritable state, or the job did not start",
     "4": "wait timed out with the job still running; otherwise wait returns the job's own exit status"
   },
-  "platforms": ["darwin-arm64", "linux-amd64"],
-  "requires": ["ps", "awk", "bash"],
+  "platforms": [
+    "darwin-arm64",
+    "linux-amd64"
+  ],
+  "requires": [
+    "ps",
+    "awk",
+    "bash"
+  ],
   "test": "bash test.sh",
   "replaces": [
     "\\bps\\b[^|;&]*-o\\s*etime=",
@@ -42,5 +54,11 @@
     "date": "2026-10-17",
     "builder": "claude-opus-5-5",
     "task": "rice-kb:.scratch/agent-dry-v1/issues/10-job-watch-background-job-observer.md"
-  }
+  },
+  "distinct_from": [
+    {
+      "tool": "pr-flow",
+      "reason": "pr-flow polls GitHub pull request checks and workflow runs; job-watch starts and observes local background processes"
+    }
+  ]
 }

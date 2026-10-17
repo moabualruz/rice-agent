@@ -28,8 +28,8 @@ of the `DRY_POLICY` managed instruction section. Private, all rights reserved.
 - Never commit secrets. Refer to secrets by name or OpenBao reference only.
 - Generic content only: no CuraOS or other proprietary content. Host addresses and service endpoints
   come from configuration, never from literals in a tool.
-- Find before adding: search the registry (`agent-dry find`, or `rg` over `tools/*/tool.json` until
-  the CLI exists) and extend an existing tool before creating a new one.
+- Find before adding: run `agent-dry find <intent>` and extend an existing tool before creating a
+  new one; create tools only with `agent-dry new` so the duplicate check runs first.
 - Every tool ships a manifest, `--help`, documented exit codes and a test; mutating tools declare
   side effects and support `--dry-run`.
 - `policy/dry-policy.md` must begin and end with its `DRY_POLICY` markers; the installer refuses
@@ -37,8 +37,9 @@ of the `DRY_POLICY` managed instruction section. Private, all rights reserved.
 
 ## Delivery checks
 
-- `just check` (runs the checks below)
-- `bash scripts/check-no-dashes.sh --tree`
+- `just ci` (vet, test, build, `agent-dry check --all`, dash and secret checks)
+- `bash tools/check-no-dashes/check-no-dashes --tree`
 - `gitleaks git --no-banner --redact`
-- CI (`.github/workflows/ci.yml`) runs the dash and secret checks on the self-hosted pool
+- CI (`.github/workflows/ci.yml`) runs the guards job (dash and secret checks) and the go job (vet,
+  test, build, `agent-dry check --all`) on the self-hosted pool
   (`runs-on: [self-hosted, linux, x64, generic]`); never hosted runners.

@@ -18,7 +18,7 @@ jobs:
 
       - name: No em or en dash
         shell: bash
-        run: bash scripts/check-no-dashes.sh --tree
+        run: bash tools/check-no-dashes/check-no-dashes --tree
 
       - name: Secret scan (gitleaks)
         shell: bash

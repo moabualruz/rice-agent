@@ -2,7 +2,7 @@
 check: dashes secrets
 
 dashes:
-    bash scripts/check-no-dashes.sh --tree
+    bash tools/check-no-dashes/check-no-dashes --tree
 
 secrets:
     gitleaks git --no-banner --redact
