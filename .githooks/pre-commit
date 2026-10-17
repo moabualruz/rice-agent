@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Commit gates. Enable once per clone: git config core.hooksPath .githooks
+# The same checks run in CI, so a clone without the hook still cannot land a violation.
+set -eu
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+bash scripts/check-no-dashes.sh
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --staged --no-banner --redact
+else
+  echo "pre-commit: gitleaks not installed; the secret scan runs in CI only" >&2
+fi

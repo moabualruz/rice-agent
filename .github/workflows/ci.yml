@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    runs-on: [self-hosted, linux, x64, generic]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: No em or en dash
+        shell: bash
+        run: bash scripts/check-no-dashes.sh --tree
+
+      - name: Secret scan (gitleaks)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$(mktemp -d)"
+          trap 'rm -rf "$tools"' EXIT
+          GOFLAGS= GOBIN="$tools" go install github.com/zricethezav/gitleaks/v8@v8.30.0
+          "$tools/gitleaks" git --no-banner --redact
