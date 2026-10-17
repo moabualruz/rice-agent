@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "dup-index",
+  "summary": "Use when finding duplicated code across repositories with an owned index.",
+  "intents": ["find duplicate code across repositories", "copy paste detection", "clone report"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "dup-index",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "success", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-18", "builder": "fixture", "task": "agent-dry advisory fixture"}
+}

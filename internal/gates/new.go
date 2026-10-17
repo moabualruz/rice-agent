@@ -52,9 +52,11 @@ type projectEntry struct {
 
 const newUsage = `Usage: agent-dry new <name> --kind script|cli|skill --scope global|project --task <ref> [flags]
 
-Run the duplicate check (gate G2, against this repository's own tools and skills; run agent-dry find
-first for installed skills and external CLIs),
-then scaffold a tool that already passes its tests and agent-dry check. Global tools go to
+Run the duplicate check (gate G2, against this repository's own tools and skills), then the reuse
+advisory, then scaffold a tool that already passes its tests and agent-dry check. The advisory
+prints on stderr, under "consider reusing before building:", up to 3 installed skills, project
+commands and external CLIs that may already cover the job; it never blocks or changes the exit
+code, and it says nothing when none match or the full registry does not load. Global tools go to
 <root>/tools/<name>/; project tools to <git root>/scripts/, listed in <git root>/.agent-dry.json;
 skills to skills/<name>/SKILL.md (project scope: .agents/skills/<name>/SKILL.md). Existing files
 are never overwritten.
@@ -73,6 +75,7 @@ Flags:
   --distinct-from <tool>    similar existing tool this one stays apart from; needs --reason
   --reason <text>           why it is distinct, at least 10 characters
   --dry-run                 print the plan and write nothing
+  --no-advisory             skip the reuse advisory (for tests and scripts)
 
 Environment: AGENT_DRY_BUILDER names the builder model recorded in origin (default "unknown").
 
@@ -89,7 +92,7 @@ type newOpts struct {
 	name, kind, scope, task, language, summary, sideEffects string
 	extends, distinctFrom, reason                           string
 	intents                                                 []string
-	dryRun                                                  bool
+	dryRun, noAdvisory                                      bool
 }
 
 // tmplData feeds the templates.
@@ -150,6 +153,9 @@ func runNew(env *cli.Env) int {
 	} else {
 		fmt.Fprintln(env.Stdout, "G2 duplicate: PASS, no existing entry at or above the threshold")
 	}
+	if !o.noAdvisory {
+		adviseReuse(env, query)
+	}
 
 	p, code := planNew(env, o)
 	if code >= 0 {
@@ -203,6 +209,7 @@ func parseNew(env *cli.Env) (*newOpts, int) {
 	fs.StringVar(&o.distinctFrom, "distinct-from", "", "")
 	fs.StringVar(&o.reason, "reason", "", "")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "")
+	fs.BoolVar(&o.noAdvisory, "no-advisory", false, "")
 	pos, err := parseInterleaved(fs, env.Args)
 	if errors.Is(err, flag.ErrHelp) {
 		fmt.Fprint(env.Stdout, newUsage)
@@ -614,6 +621,79 @@ func pathCollision(name, toolsDir string) string {
 		}
 	}
 	return abs
+}
+
+// loadAdvisory loads every source (project commands, installed skills and external providers as
+// well as owned entries) for the reuse advisory. Tests replace it.
+var loadAdvisory = func(getenv func(string) string) (searcher, error) {
+	ix, err := registry.Load(getenv, registry.Options{})
+	if err != nil {
+		return nil, err
+	}
+	return ix, nil
+}
+
+// advisoryLimit caps the reuse advisory lines.
+const advisoryLimit = 3
+
+// adviseReuse prints on stderr the capabilities agent-dry does not own that may already cover the
+// job, so scripted callers parsing stdout see nothing new. It is advisory only: it never blocks or
+// changes the exit code, and it prints nothing when the full registry does not load.
+func adviseReuse(env *cli.Env, query string) {
+	ix, err := loadAdvisory(env.Getenv)
+	if err != nil {
+		return
+	}
+	hits := reuseCandidates(ix, query)
+	if len(hits) == 0 {
+		return
+	}
+	fmt.Fprintln(env.Stderr, "consider reusing before building:")
+	for _, h := range hits {
+		fmt.Fprintln(env.Stderr, "  "+advisoryLine(h))
+	}
+}
+
+// reuseCandidates returns, best first, at most advisoryLimit hits at or above the threshold from
+// sources agent-dry does not own: external providers, installed skills and project commands.
+func reuseCandidates(ix searcher, query string) []registry.Result {
+	var out []registry.Result
+	for _, h := range ix.Search(query, 0) {
+		if h.Score < registry.Threshold || h.Semantic || h.Kind == "wanted" || h.Kind == "seen" {
+			continue
+		}
+		if h.Source != "external" && h.Source != "skill" && !strings.HasPrefix(h.Source, "project:") {
+			continue
+		}
+		out = append(out, h)
+		if len(out) == advisoryLimit {
+			break
+		}
+	}
+	return out
+}
+
+// advisoryLine formats one reuse candidate the way find prints it, with the installed or missing
+// marker for an external provider.
+func advisoryLine(h registry.Result) string {
+	line := fmt.Sprintf("%s  %s  [%s %s] %s", h.Name, shorten(h.Summary, 90), h.Kind, h.Scope, h.Entry)
+	if h.Installed != nil {
+		if *h.Installed {
+			return line + " (installed)"
+		}
+		return line + " (missing: " + shorten(h.Install, 72) + ")"
+	}
+	return line
+}
+
+// shorten collapses whitespace and cuts s to n runes, ending in "..." when cut.
+func shorten(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimRight(string(r[:n-3]), " ") + "..."
 }
 
 // registryResultLine formats one hit the way find prints it.

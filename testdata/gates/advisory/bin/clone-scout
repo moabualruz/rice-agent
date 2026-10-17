@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fixture external CLI for the reuse advisory: resolves on the fixture PATH.
+echo "clone-scout fixture"

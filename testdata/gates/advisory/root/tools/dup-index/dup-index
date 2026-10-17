@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# dup-index: advisory fixture, an owned tool the reuse advisory must never list.
+set -euo pipefail
+case "${1:-}" in
+  -h | --help)
+    printf '%s\n' "Usage: dup-index <word>" "" "Exit codes: 0 success, 2 usage error."
+    exit 0
+    ;;
+  '')
+    printf '%s: missing word\n' "dup-index" >&2
+    exit 2
+    ;;
+esac
+printf '%s\n' "$1"

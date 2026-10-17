@@ -2,6 +2,7 @@ package gates
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/moabualruz/agent-dry/internal/manifest"
+	"github.com/moabualruz/agent-dry/internal/registry"
 )
 
 func fixedNow(t *testing.T) {
@@ -161,6 +163,125 @@ func TestNewDuplicateGate(t *testing.T) {
 	tool, err = manifest.Load(filepath.Join(root, "tools", "zz-dup-two"))
 	if err != nil || len(tool.DistinctFrom) != 1 || tool.DistinctFrom[0].Tool != "pr-flow" || tool.DistinctFrom[0].Reason != reason {
 		t.Fatalf("distinct_from not recorded: %v %+v", err, tool)
+	}
+}
+
+var advisoryFixture = mustAbs(filepath.Join("..", "..", "testdata", "gates", "advisory"))
+
+const advisoryHeading = "consider reusing before building:"
+
+// The advisory reads the full registry from fixtures: an installed and a missing external
+// provider and a skill installed under HOME are listed, the owned dup-index never is, and the
+// scaffold goes ahead with the same exit code and stdout as without the advisory.
+func TestNewReuseAdvisory(t *testing.T) {
+	root := emptyRoot(t)
+	copyDir(t, filepath.Join(advisoryFixture, "root"), root)
+	isolate(t, root)
+	copyDir(t, filepath.Join(advisoryFixture, "home"), os.Getenv("HOME"))
+	t.Setenv("PATH", filepath.Join(advisoryFixture, "bin"))
+	t.Chdir(t.TempDir()) // no Git root, so no project commands
+	fixedNow(t)
+
+	// dup-index is owned and matches; --extends clears it in G2 so the advisory runs.
+	args := []string{"zz-dup-hunt", "--kind", "script", "--scope", "global", "--task", "rice-kb:issues/30",
+		"--summary", "Use when finding duplicated code across repositories",
+		"--intent", "find duplicate code across repos", "--intent", "copy paste detection", "--intent", "clone report",
+		"--extends", "dup-index"}
+
+	code, out, errOut := run(t, "new", append(args, "--dry-run")...)
+	if code != 0 || !strings.Contains(out, "dry run: nothing written") {
+		t.Fatalf("advisory dry run: exit %d\n%s%s", code, out, errOut)
+	}
+	want := advisoryHeading + "\n" +
+		"  clone-scout  Use when finding duplicated code across repositories, with a JSON report.  [external global] clone-scout (installed)\n" +
+		"  duplication-review  Use when reviewing duplicated code across repositories: copy paste detection and a clon...  [skill global] ~/.agents/skills/duplication-review/SKILL.md\n" +
+		"  paste-radar  Use when detecting copy paste clones in one repository.  [external global] paste-radar (missing: brew install paste-radar)\n"
+	if errOut != want {
+		t.Errorf("advisory stderr:\n%s\nwant:\n%s", errOut, want)
+	}
+	if strings.Contains(errOut, "dup-index") || strings.Contains(errOut, "token-tally") {
+		t.Errorf("advisory lists an owned or unrelated entry:\n%s", errOut)
+	}
+	if strings.Contains(out, advisoryHeading) {
+		t.Errorf("advisory on stdout:\n%s", out)
+	}
+
+	quietCode, quietOut, quietErr := run(t, "new", append(args, "--dry-run", "--no-advisory")...)
+	if quietCode != code || quietOut != out || quietErr != "" {
+		t.Errorf("--no-advisory: exit %d, stdout %q, stderr %q; want exit %d and the same stdout", quietCode, quietOut, quietErr, code)
+	}
+
+	code, out, errOut = run(t, "new", args...)
+	if code != 0 || !strings.HasPrefix(errOut, advisoryHeading) || !strings.Contains(out, "next: ") {
+		t.Fatalf("scaffold after advisory: exit %d\n%s%s", code, out, errOut)
+	}
+	if tool, err := manifest.Load(filepath.Join(root, "tools", "zz-dup-hunt")); err != nil || tool.Extends != "dup-index" {
+		t.Fatalf("scaffold not written: %v %+v", err, tool)
+	}
+}
+
+// useAdvisory replaces the advisory registry for one test.
+func useAdvisory(t *testing.T, err error, results ...registry.Result) {
+	t.Helper()
+	saved := loadAdvisory
+	t.Cleanup(func() { loadAdvisory = saved })
+	loadAdvisory = func(func(string) string) (searcher, error) {
+		if err != nil {
+			return nil, err
+		}
+		return fakeIndex{results}, nil
+	}
+}
+
+func sourced(name, kind, source string, score float64) registry.Result {
+	h := hit(name, kind)
+	h.Source, h.Score = source, score
+	return h
+}
+
+// The advisory keeps only unowned sources at or above the threshold, at most three, best first,
+// and stays silent when the full registry does not load. G2 refusals print no advisory.
+func TestNewReuseAdvisoryFilters(t *testing.T) {
+	root := emptyRoot(t)
+	isolate(t, root)
+	useIndex(t, nil)
+	base := []string{"zz-adv", "--kind", "script", "--scope", "global", "--task", "rice-kb:issues/30", "--dry-run"}
+	high := registry.Threshold + 3
+	semantic := sourced("zz-semantic", "script", "semantic", high)
+	semantic.Semantic = true
+	useAdvisory(t, nil,
+		sourced("owned-tool", "script", "agent-dry", high+5),
+		sourced("owned-family", "wanted", "wanted", high+4),
+		semantic,
+		sourced("just-recipe", "recipe", "project:just", high+2),
+		sourced("home-skill", "skill", "skill", high+1),
+		sourced("weak-cli", "external", "external", registry.Threshold-0.5),
+		sourced("listed-cmd", "script", "project:agent-dry", high),
+		sourced("fourth-cli", "external", "external", high-1),
+	)
+	code, out, errOut := run(t, "new", base...)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, out, errOut)
+	}
+	var names []string
+	for _, l := range strings.Split(strings.TrimSpace(errOut), "\n")[1:] {
+		names = append(names, strings.Fields(l)[0])
+	}
+	if !strings.HasPrefix(errOut, advisoryHeading+"\n") || strings.Join(names, " ") != "just-recipe home-skill listed-cmd" {
+		t.Errorf("advisory:\n%s", errOut)
+	}
+
+	useAdvisory(t, errors.New("unreadable registry"))
+	if code, out, errOut := run(t, "new", base...); code != 0 || errOut != "" || !strings.Contains(out, "dry run: nothing written") {
+		t.Errorf("load error: exit %d, stderr %q\n%s", code, errOut, out)
+	}
+
+	// G2 refusal is unchanged: exit 1, the duplicate on stdout, no advisory.
+	useAdvisory(t, nil, sourced("home-skill", "skill", "skill", high))
+	useIndex(t, nil, hit("pr-flow", "script"))
+	code, out, errOut = run(t, "new", base...)
+	if code != 1 || !strings.Contains(out, "pr-flow") || !strings.Contains(errOut, "G2 duplicate") || strings.Contains(errOut, advisoryHeading) {
+		t.Errorf("G2 refusal: exit %d\n%s%s", code, out, errOut)
 	}
 }
 
@@ -324,7 +445,7 @@ func TestNewUsage(t *testing.T) {
 		}
 	}
 	code, out, _ := run(t, "new", "--help")
-	if code != 0 || !strings.HasPrefix(out, "Usage: agent-dry new") {
+	if code != 0 || !strings.HasPrefix(out, "Usage: agent-dry new") || !strings.Contains(out, advisoryHeading) || !strings.Contains(out, "--no-advisory") {
 		t.Errorf("--help: exit %d\n%s", code, out)
 	}
 }

@@ -1,0 +1,38 @@
+{
+  "schema": "provider/v1",
+  "providers": [
+    {
+      "name": "clone-scout",
+      "summary": "Use when finding duplicated code across repositories, with a JSON report.",
+      "intents": ["find duplicate code across repositories", "copy paste detection", "clone report as json"],
+      "command": "clone-scout",
+      "owner": "upstream:https://example.com/clone-scout",
+      "license": "MIT",
+      "install": "brew install clone-scout",
+      "homepage": "https://example.com/clone-scout",
+      "notes": "Fixture entry whose command is on the fixture PATH."
+    },
+    {
+      "name": "paste-radar",
+      "summary": "Use when detecting copy paste clones in one repository.",
+      "intents": ["copy paste detection", "detect cloned code blocks", "clone report"],
+      "command": "paste-radar",
+      "owner": "upstream:https://example.com/paste-radar",
+      "license": "Apache-2.0",
+      "install": "brew install paste-radar",
+      "homepage": "https://example.com/paste-radar",
+      "notes": "Fixture entry whose command is not on the fixture PATH."
+    },
+    {
+      "name": "token-tally",
+      "summary": "Use when reporting agent token usage and cost from local session logs.",
+      "intents": ["token usage cost", "agent spend per day", "offline usage json"],
+      "command": "token-tally",
+      "owner": "project:example/token-tally",
+      "license": "MIT",
+      "install": "npm install -g token-tally",
+      "homepage": "https://example.com/token-tally",
+      "notes": "Fixture entry unrelated to the advisory query."
+    }
+  ]
+}
