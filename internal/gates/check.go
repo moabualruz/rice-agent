@@ -292,12 +292,14 @@ func (c *checker) duplicate(t *manifest.Tool) gateResult {
 	return failf("matches %s; extend that tool, or declare extends or distinct_from naming it", strings.Join(names, ", "))
 }
 
-// G3: exit codes 0 and 2 are documented and --help follows the contract.
+// G3: exit codes 0 and 2 are documented and --help follows the contract. A promoted tool may keep
+// its established usage code (tool contract), so it needs 0 plus at least one other documented code.
 func (c *checker) iface(t *manifest.Tool) gateResult {
-	for _, code := range []string{"0", "2"} {
-		if _, ok := t.ExitCodes[code]; !ok {
-			return failf("exit_codes must document %s (success) and 2 (usage error); missing %s", "0", code)
-		}
+	if _, ok := t.ExitCodes["0"]; !ok {
+		return failf("exit_codes must document 0 (success)")
+	}
+	if _, ok := t.ExitCodes["2"]; !ok && t.Origin.PromotedFrom == "" {
+		return failf("exit_codes must document 2 (usage error); only a promoted tool may keep another usage code")
 	}
 	entry := t.EntryPath()
 	fi, err := os.Stat(entry)

@@ -253,7 +253,7 @@ func TestCheckExitCodesDocumented(t *testing.T) {
 	writeFile(t, p, strings.Replace(readFile(t, p), `"2": "usage error"`, `"1": "negative result"`, 1), 0o644)
 	code, out, _ := run(t, "check", "good-tool")
 	l := parseCheck(t, out)["good-tool/G3"]
-	if code != 1 || l.status != "FAIL" || !strings.Contains(l.reason, "missing 2") {
+	if code != 1 || l.status != "FAIL" || !strings.Contains(l.reason, "document 2") {
 		t.Fatalf("exit codes: exit %d, G3 %+v\n%s", code, l, out)
 	}
 }
@@ -286,5 +286,19 @@ func TestCheckEmptyRoot(t *testing.T) {
 	code, out, _ := run(t, "check", "--all")
 	if code != 0 || !strings.Contains(out, "check: 0 tools") {
 		t.Errorf("empty root: exit %d\n%s", code, out)
+	}
+}
+
+func TestCheckPromotedToolKeepsUsageCode(t *testing.T) {
+	root := rootWith(t, "good-tool")
+	isolate(t, root)
+	useIndex(t, nil)
+	p := filepath.Join(root, "tools", "good-tool", "tool.json")
+	raw := strings.Replace(readFile(t, p), `"2": "usage error"`, `"64": "usage error"`, 1)
+	raw = strings.Replace(raw, `"origin": {`, `"origin": {"promoted_from": "other-repo/scripts/good-tool.sh", `, 1)
+	writeFile(t, p, raw, 0o644)
+	_, out, _ := run(t, "check", "good-tool")
+	if l := parseCheck(t, out)["good-tool/G3"]; l.status != "PASS" {
+		t.Fatalf("promoted tool with usage code 64: G3 %+v\n%s", l, out)
 	}
 }

@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# bao-run: run one command with a short-lived OpenBao token, then revoke it.
+# Promoted from abualruz-homelab/scripts/bao-operator-run.sh; same CLI and exit codes.
+#
+# Logs in with userpass, exports BAO_ADDR/BAO_TOKEN and VAULT_ADDR/VAULT_TOKEN to the child
+# process only, and revokes the token when the child exits. The password is read from the
+# single "Admin password" line of the access file's OpenBao section; nothing else in that
+# file is read. No credential is printed, logged, written to disk or placed in any process
+# argument list (the login body and the token header travel on stdin).
+set -euo pipefail
+set +x
+
+prog=bao-run
+usage_line="Usage: bao-run [--dry-run] [--] <command> [args...]"
+
+usage() {
+  cat <<'EOF'
+Usage: bao-run [--dry-run] [--] <command> [args...]
+
+Run one command with a short-lived OpenBao token, then revoke it. bao-run logs
+in with userpass, exports BAO_ADDR, BAO_TOKEN, VAULT_ADDR and VAULT_TOKEN to the
+command only, and revokes the token when the command exits: on success, on
+error, and when bao-run receives TERM or HUP (the signal is forwarded and the
+command is waited for first, so its own cleanup can still use the token; a
+second signal kills it). The password is read inside the process from the
+"- Admin password: `...`" line of the "## OpenBao vault" section of the access
+file. No token or password reaches argv, output, logs or a file.
+
+Options:
+  --dry-run    check settings, curl and jq, and the access file (or the
+               delegated token file), print the plan and exit with the code a
+               real run would fail with; nothing is contacted or run
+  -h, --help   show this help
+
+Settings: the environment first, then ~/.config/agent-dry/config.json (or the
+file named by AGENT_DRY_CONFIG). There are no built-in defaults.
+  BAO_OPERATOR_ADDR         openbao.addr         http:// or https:// endpoint
+  BAO_OPERATOR_USER         openbao.user         userpass identity
+  BAO_OPERATOR_ACCESS_FILE  openbao.access_file  access file; a leading ~/ is
+                                                 expanded
+  BAO_OPERATOR_TOKEN_FILE   (environment only)   delegated token: used instead
+                            of a login and never revoked by bao-run
+
+Exit codes:
+  <n>  the command's own status (0 when it succeeds, 127 when not found)
+  3    a setting is missing or invalid, the config file is unusable, or curl
+       or jq is missing
+  64   usage error
+  65   access file unreadable, password line missing, or delegated token
+       file unreadable or empty
+  66   login failed
+  129  HUP received (command stopped, token revoked)
+  130  INT received before the command started, or under Bash older than 4.4
+       (where the command cannot see INT, so TERM is forwarded); with newer
+       Bash the terminal's INT reaches the command and its status is returned
+  143  TERM received (command stopped, token revoked)
+
+Example:
+  bao-run -- bao kv get -field=password kv/app/example
+EOF
+}
+
+die() { local code=$1; shift; printf '%s: %s\n' "$prog" "$*" >&2; exit "$code"; }
+
+dry_run=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) dry_run=1; shift ;;
+    --) shift; break ;;
+    -*) printf '%s: unknown option %s\n%s\n' "$prog" "$1" "$usage_line" >&2; exit 64 ;;
+    *) break ;;
+  esac
+done
+if [ "$#" -eq 0 ]; then
+  echo "$usage_line" >&2
+  exit 64
+fi
+
+for dep in curl jq; do
+  command -v "$dep" >/dev/null 2>&1 || die 3 "missing dependency: $dep"
+done
+
+# State shared with the traps below.
+addr=""
+token=""
+mode=""          # "login" once a login is attempted: only then is the token revoked
+child=""         # PID of the running command
+trapped=0        # set by every trap so the wait loop can tell an interrupted wait
+pending_exit=""  # exit code chosen by TERM, HUP or a forwarded INT
+
+# shellcheck disable=SC2329  # invoked through the EXIT trap
+revoke() {
+  { [ "$mode" = login ] && [ -n "$token" ]; } || return 0
+  printf 'X-Vault-Token: %s\n' "$token" | curl -q --noproxy '*' -fsS --max-time 15 -o /dev/null \
+    -H @- -X POST "$addr/v1/auth/token/revoke-self" || echo "$prog: revoke failed" >&2
+  token=""
+}
+
+# stop_child <signal> <exit code>: before the command starts, exit (the EXIT trap revokes);
+# while it runs, forward the signal and let the wait loop finish; a second signal kills it.
+# shellcheck disable=SC2329  # invoked through traps
+stop_child() {
+  trapped=1
+  [ -n "$child" ] || exit "$2"
+  if [ -n "$pending_exit" ]; then kill -KILL "$child" 2>/dev/null || true; return 0; fi
+  pending_exit=$2
+  kill -"$1" "$child" 2>/dev/null || true
+}
+
+# Bash before 4.4 starts background commands with INT ignored and cannot restore it, so the
+# terminal's INT never reaches the command; forward TERM there instead. Newer Bash restores
+# INT for the command, which then gets the terminal's INT itself, like a foreground command.
+legacy_int=0
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 4 ]; }; then
+  legacy_int=1
+fi
+# shellcheck disable=SC2329  # invoked through the INT trap
+on_int() {
+  if [ -z "$child" ] || [ "$legacy_int" -eq 1 ] || [ -n "$pending_exit" ]; then
+    stop_child TERM 130
+  else
+    trapped=1
+  fi
+}
+
+trap revoke EXIT
+trap 'stop_child TERM 143' TERM
+trap 'stop_child HUP 129' HUP
+trap on_int INT
+
+# run_child <command...>: run the command with the token in its environment only and set
+# status. It runs in the background with stdin kept, so TERM and HUP reach this shell while
+# the command runs; waiting happens here, never inside a trap, so a second signal is handled.
+run_child() {
+  local rc prev=""
+  (
+    trap - INT QUIT
+    # Report a command that cannot run as the shell does (Bash 3.2 exits 1 on a failed exec).
+    case "$1" in
+      */*) [ -e "$1" ] || { echo "$prog: $1: not found" >&2; exit 127; }
+           { [ -f "$1" ] && [ -x "$1" ]; } || { echo "$prog: $1: not executable" >&2; exit 126; } ;;
+      *) type -P -- "$1" >/dev/null 2>&1 || { echo "$prog: $1: command not found" >&2; exit 127; } ;;
+    esac
+    export BAO_ADDR="$addr" BAO_TOKEN="$token" VAULT_ADDR="$addr" VAULT_TOKEN="$token"
+    exec "$@"
+  ) <&0 &
+  child=$!
+  while :; do
+    trapped=0
+    rc=0; wait "$child" || rc=$?
+    if [ "$trapped" -eq 0 ]; then
+      # A trap that ran just after a completed wait leaves nothing to collect (127).
+      if [ "$rc" -eq 127 ] && [ -n "$prev" ]; then rc=$prev; fi
+      break
+    fi
+    prev=$rc
+  done
+  child=""
+  status=$rc
+  [ -z "$pending_exit" ] || status=$pending_exit
+}
+
+config="${AGENT_DRY_CONFIG:-${HOME:-}/.config/agent-dry/config.json}"
+
+# cfg <key>: print openbao.<key> from the config file; empty when the file or key is absent.
+cfg() {
+  [ -e "$config" ] || return 0
+  [ -r "$config" ] || die 3 "config file not readable: $config"
+  jq -r --arg k "$1" '
+    if type != "object" then error("config is not an object") else . end
+    | (.openbao // {})
+    | if type != "object" then error("openbao is not an object") else . end
+    | (.[$k] // empty)
+    | if type != "string" then error("value is not a string") else . end' "$config" 2>/dev/null \
+    || die 3 "config file unusable for openbao.$1: $config"
+}
+
+# setting <ENV_NAME> <config key>: the environment wins, then the config file.
+setting() {
+  local v=${!1:-}
+  if [ -z "$v" ]; then v=$(cfg "$2") || exit $?; fi
+  printf '%s' "$v"
+}
+
+addr=$(setting BAO_OPERATOR_ADDR addr) || exit $?
+case "$addr" in
+  '') die 3 "OpenBao address not set (BAO_OPERATOR_ADDR or openbao.addr)" ;;
+  http://?*|https://?*) ;;
+  *) die 3 "OpenBao address must start with http:// or https://" ;;
+esac
+while [ "${addr%/}" != "$addr" ]; do addr=${addr%/}; done
+
+# Scheduled jobs explicitly delegate an existing least-privilege token. The job
+# owns renewal; this runner does not revoke credentials it did not mint.
+if [ -n "${BAO_OPERATOR_TOKEN_FILE:-}" ]; then
+  mode=delegated
+  token="$(cat -- "$BAO_OPERATOR_TOKEN_FILE")" || exit 65
+  [ -n "$token" ] || die 65 "delegated token missing"
+  if [ "$dry_run" -eq 1 ]; then
+    token=""
+    printf '%s dry run: nothing contacted, nothing run\n' "$prog"
+    printf '  endpoint: %s\n' "$addr"
+    printf '  token: delegated from %s (not revoked)\n' "$BAO_OPERATOR_TOKEN_FILE"
+    printf '  command:'; printf ' %q' "$@"; printf '\n'
+    exit 0
+  fi
+  status=0
+  run_child "$@"
+  exit "$status"
+fi
+
+user=$(setting BAO_OPERATOR_USER user) || exit $?
+case "$user" in
+  '') die 3 "OpenBao user not set (BAO_OPERATOR_USER or openbao.user)" ;;
+  *[!A-Za-z0-9._@-]*) die 3 "OpenBao user has characters outside A-Z a-z 0-9 . _ @ -" ;;
+esac
+access=$(setting BAO_OPERATOR_ACCESS_FILE access_file) || exit $?
+[ -n "$access" ] || die 3 "access file not set (BAO_OPERATOR_ACCESS_FILE or openbao.access_file)"
+# shellcheck disable=SC2088  # matches a literal ~/ from the config value on purpose
+case "$access" in "~/"*) access="${HOME:-}/${access#\~/}" ;; esac
+
+[ -r "$access" ] || die 65 "access file not readable"
+
+# Only the "Admin password" line inside the OpenBao section; the value sits between backticks.
+password="$(awk '
+  /^## OpenBao vault/ { in_section = 1; next }
+  /^## / && in_section { exit }
+  in_section && /^- Admin password: `/ {
+    line = $0
+    sub(/^- Admin password: `/, "", line)
+    sub(/`[[:space:]]*$/, "", line)
+    print line
+    exit
+  }' "$access")"
+[ -n "$password" ] || die 65 "password line not found"
+
+if [ "$dry_run" -eq 1 ]; then
+  unset password
+  printf '%s dry run: nothing contacted, nothing run\n' "$prog"
+  printf '  endpoint: %s\n' "$addr"
+  printf '  login: userpass %s (POST /v1/auth/userpass/login/%s)\n' "$user" "$user"
+  printf '  access file: %s (password line found)\n' "$access"
+  printf '  command:'; printf ' %q' "$@"; printf '\n'
+  printf '  after: revoke the token (POST /v1/auth/token/revoke-self)\n'
+  exit 0
+fi
+
+login_body() { printf '%s' "$password" | jq -Rs '{password: .}'; }
+mode=login
+token="$(login_body | curl -q --noproxy '*' -fsS --max-time 15 -X POST --data @- \
+  "$addr/v1/auth/userpass/login/$user" | jq -r '.auth.client_token // empty' 2>/dev/null)" || token=""
+unset password
+[ -n "$token" ] || die 66 "login failed"
+
+status=0
+run_child "$@"
+exit "$status"

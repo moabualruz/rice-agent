@@ -1,0 +1,48 @@
+{
+  "schema": "tool/v1",
+  "name": "repo-state",
+  "summary": "Use when you need a repo's branch, HEAD, upstream distance and dirty counts",
+  "intents": [
+    "repo status",
+    "git state summary",
+    "dirty files count",
+    "branch and head",
+    "worktrees",
+    "ahead behind upstream",
+    "is the repo clean",
+    "status of several repositories",
+    "current branch and short sha",
+    "uncommitted changes count",
+    "owner and repo name of origin"
+  ],
+  "tags": ["git", "repository", "status"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "repo-state",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {
+    "0": "every path is inside a Git work tree",
+    "1": "at least one path is not inside a Git work tree; the others are still shown",
+    "2": "usage error",
+    "3": "git is missing or older than 2.15"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["git >= 2.15"],
+  "test": "bash test.sh",
+  "replaces": [
+    "git status --short\\s*\\|\\s*(head|wc)",
+    "git status --porcelain(=v[12])?\\s*\\|\\s*(head|wc)",
+    "git rev-parse --short HEAD",
+    "git branch --show-current",
+    "git diff --stat\\s*\\|\\s*tail",
+    "git rev-list --left-right --count",
+    "git worktree list\\s*\\|\\s*wc"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "agent-dry-v1 issue 11: repo-state compact repository snapshot"
+  }
+}

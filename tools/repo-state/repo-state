@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# repo-state: compact snapshot of one or more Git repositories. Read only.
+set -euo pipefail
+
+prog=repo-state
+
+usage() {
+  cat <<'EOF'
+Usage: repo-state [<path>...] [--json] [--remote-name] [--max N]
+
+Print one compact block per Git repository (default: the current directory):
+root, branch or detached, short HEAD, upstream with ahead and behind counts,
+staged, unstaged, untracked and unmerged counts, the `git diff --stat` summary
+line (unstaged changes) and the worktree count. Paths inside the same
+repository are shown once. Untracked entries are counted as `git status`
+lists them (a new directory counts once). Git runs with --no-optional-locks.
+
+Options:
+  --json         print a JSON array with one object per repository or failed path
+  --remote-name  add owner/repo of the upstream remote (else origin, else the
+                 first remote); the URL is parsed inside the process, never printed
+  --max N        show at most N repositories (default 50); the rest are counted
+                 on stderr
+  -h, --help     show this help
+
+Exit codes:
+  0  every path is inside a Git work tree
+  1  at least one path is not (the others are still shown)
+  2  usage error
+  3  git is missing or older than 2.15
+
+Example:
+  repo-state ~/src/app ~/src/lib --remote-name
+EOF
+}
+
+die_usage() { printf '%s: %s\n' "$prog" "$1" >&2; echo "Usage: repo-state [<path>...] [--json] [--remote-name] [--max N]" >&2; exit 2; }
+
+json=0
+remote_name=0
+max=50
+paths=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --json) json=1 ;;
+    --remote-name) remote_name=1 ;;
+    --max)
+      [ "$#" -ge 2 ] || die_usage "--max needs a number"
+      max=$2; shift ;;
+    --max=*) max=${1#--max=} ;;
+    --) shift; while [ "$#" -gt 0 ]; do paths+=("$1"); shift; done; break ;;
+    -?*) die_usage "unknown option: $1" ;;
+    *) paths+=("$1") ;;
+  esac
+  shift
+done
+case "$max" in ''|*[!0-9]*|0) die_usage "--max needs a positive integer" ;; esac
+[ "${#paths[@]}" -gt 0 ] || paths=(.)
+
+command -v git >/dev/null 2>&1 || { echo "$prog: git not found" >&2; exit 3; }
+gitver=$(git --version 2>/dev/null | awk '{print $3}')
+if ! printf '%s\n' "$gitver" | awk -F. '{ exit !($1 > 2 || ($1 == 2 && $2 >= 15)) }'; then
+  echo "$prog: git 2.15 or newer required (found ${gitver:-unknown})" >&2
+  exit 3
+fi
+
+g() { git --no-optional-locks -C "$1" "${@:2}"; }
+
+# json_str <value>: print a JSON string literal; Bash 3.2 and 5.x compatible.
+json_str() {
+  local s=$1 bs=\\ q='"'
+  s=${s//"$bs"/"$bs$bs"}
+  s=${s//"$q"/"$bs$q"}
+  s=${s//$'\t'/"${bs}t"}
+  s=${s//$'\n'/"${bs}n"}
+  s=${s//$'\r'/"${bs}r"}
+  case $s in *[[:cntrl:]]*) s=$(printf '%s' "$s" | LC_ALL=C tr -d '\000-\037') ;; esac
+  printf '"%s"' "$s"
+}
+json_str_or_null() { if [ -n "$1" ]; then json_str "$1"; else printf 'null'; fi; }
+
+# remote_slug <root> <branch>: print owner/repo of the chosen remote. The URL stays in
+# this function's memory: credentials, host and port in it are discarded unprinted.
+remote_slug() {
+  local root=$1 branch=$2 remote="" remotes url path prefix name owner nl=$'\n'
+  remotes=$(g "$root" remote 2>/dev/null || true)
+  [ -n "$remotes" ] || return 0
+  if [ -n "$branch" ]; then
+    remote=$(g "$root" config --get "branch.$branch.remote" 2>/dev/null || true)
+  fi
+  case "$nl$remotes$nl" in
+    *"$nl$remote$nl"*) [ -n "$remote" ] && [ "$remote" != "." ] || remote="" ;;
+    *) remote="" ;;
+  esac
+  if [ -z "$remote" ]; then
+    case "$nl$remotes$nl" in
+      *"${nl}origin$nl"*) remote=origin ;;
+      *) remote=${remotes%%"$nl"*} ;;
+    esac
+  fi
+  url=$(g "$root" remote get-url -- "$remote" 2>/dev/null) || return 0
+  case "$url" in
+    *://*) path=${url#*://}; case "$path" in */*) path=${path#*/} ;; *) path="" ;; esac ;;
+    *:*)
+      prefix=${url%%:*}
+      case "$prefix" in */*) path=$url ;; *) path=${url#*:} ;; esac ;;
+    *) path=$url ;;
+  esac
+  url=""
+  path=${path%%\?*}; path=${path%%#*}
+  while [ "${path%/}" != "$path" ]; do path=${path%/}; done
+  path=${path%.git}
+  name=${path##*/}
+  owner=""
+  case "$path" in */*) owner=${path%/*}; owner=${owner##*/} ;; esac
+  case "$owner$name" in ''|*[!A-Za-z0-9._~-]*) printf '(unparsed)'; return 0 ;; esac
+  if [ -n "$owner" ]; then printf '%s/%s' "$owner" "$name"; else printf '%s' "$name"; fi
+}
+
+seen=$'\n'
+shown=0
+skipped=0
+failed=0
+first_json=1
+
+emit_json() {
+  if [ "$first_json" -eq 1 ]; then printf '[\n  %s' "$1"; first_json=0; else printf ',\n  %s' "$1"; fi
+}
+
+report_error() {
+  local path=$1 msg=$2
+  failed=1
+  printf '%s: %s: %s\n' "$prog" "$path" "$msg" >&2
+  if [ "$json" -eq 1 ]; then
+    emit_json "{\"path\": $(json_str "$path"), \"error\": $(json_str "$msg")}"
+  fi
+}
+
+for p in "${paths[@]}"; do
+  if [ ! -d "$p" ]; then report_error "$p" "not a directory"; continue; fi
+  root=$(g "$p" rev-parse --show-toplevel 2>/dev/null) || root=""
+  if [ -z "$root" ]; then report_error "$p" "not inside a Git work tree"; continue; fi
+  case "$seen" in *$'\n'"$root"$'\n'*) continue ;; esac
+  seen="$seen$root"$'\n'
+  if [ "$shown" -ge "$max" ]; then skipped=$((skipped + 1)); continue; fi
+  st=$(g "$root" status --porcelain=v2 --branch 2>/dev/null) || { report_error "$p" "git status failed"; continue; }
+  IFS=$'\t' read -r oid head upstream ahead behind staged unstaged untracked unmerged <<EOF2
+$(printf '%s\n' "$st" | awk '
+  /^# branch\.oid / { oid = $3 }
+  /^# branch\.head / { head = $3 }
+  /^# branch\.upstream / { up = $3 }
+  /^# branch\.ab / { ahead = substr($3, 2); behind = substr($4, 2) }
+  /^[12] / { if (substr($2, 1, 1) != ".") st++; if (substr($2, 2, 1) != ".") un++ }
+  /^u / { um++ }
+  /^\? / { ut++ }
+  END {
+    printf "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n", (oid == "" ? "-" : oid), (head == "" ? "-" : head), \
+      (up == "" ? "-" : up), (ahead == "" ? "-" : ahead), (behind == "" ? "-" : behind), st, un, ut, um
+  }')
+EOF2
+  branch=$head; detached=false
+  [ "$head" = "(detached)" ] && { branch=""; detached=true; }
+  [ "$head" = "-" ] && branch=""
+  short=""
+  [ "$oid" != "(initial)" ] && [ "$oid" != "-" ] && short=$(g "$root" rev-parse --short HEAD 2>/dev/null || true)
+  [ "$upstream" = "-" ] && upstream=""
+  diffline=$(g "$root" diff --shortstat 2>/dev/null | sed 's/^ *//' || true)
+  worktrees=$(g "$root" worktree list --porcelain 2>/dev/null | awk '/^worktree /{n++} END{print n+0}')
+  slug=""
+  [ "$remote_name" -eq 1 ] && slug=$(remote_slug "$root" "$branch")
+  shown=$((shown + 1))
+
+  if [ "$json" -eq 1 ]; then
+    if [ "$ahead" = "-" ]; then ab='"ahead": null, "behind": null'; else ab="\"ahead\": $ahead, \"behind\": $behind"; fi
+    obj="{\"path\": $(json_str "$p"), \"root\": $(json_str "$root"), \"branch\": $(json_str_or_null "$branch"), \"detached\": $detached, \"head\": $(json_str_or_null "$short"), \"upstream\": $(json_str_or_null "$upstream"), $ab, \"staged\": $staged, \"unstaged\": $unstaged, \"untracked\": $untracked, \"unmerged\": $unmerged, \"diff\": $(json_str "$diffline"), \"worktrees\": $worktrees"
+    if [ "$remote_name" -eq 1 ]; then obj="$obj, \"remote\": $(json_str_or_null "$slug")"; fi
+    emit_json "$obj}"
+  else
+    if [ "$detached" = true ]; then bline="branch: (detached)"; else bline="branch: ${branch:-(none)}"; fi
+    bline="$bline  head: ${short:-(none)}"
+    if [ -z "$upstream" ]; then bline="$bline  upstream: none"
+    elif [ "$ahead" = "-" ]; then bline="$bline  upstream: $upstream (gone)"
+    else bline="$bline  upstream: $upstream  ahead: $ahead  behind: $behind"
+    fi
+    cline="staged: $staged  unstaged: $unstaged  untracked: $untracked"
+    [ "$unmerged" -gt 0 ] && cline="$cline  unmerged: $unmerged"
+    cline="$cline  worktrees: $worktrees"
+    printf '%s\n  %s\n  %s\n  diff: %s\n' "$root" "$bline" "$cline" "${diffline:-none}"
+    [ "$remote_name" -eq 1 ] && printf '  remote: %s\n' "${slug:-none}"
+  fi
+done
+
+if [ "$json" -eq 1 ]; then
+  if [ "$first_json" -eq 1 ]; then printf '[]\n'; else printf '\n]\n'; fi
+fi
+[ "$skipped" -eq 0 ] || printf '%s: %d more repositories not shown (raise --max)\n' "$prog" "$skipped" >&2
+exit "$failed"

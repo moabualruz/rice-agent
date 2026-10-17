@@ -1,0 +1,53 @@
+{
+  "schema": "tool/v1",
+  "name": "bao-run",
+  "summary": "Use when a command needs an OpenBao token: log in, run it, then revoke the token",
+  "intents": [
+    "openbao login",
+    "read secret from openbao",
+    "run command with vault token",
+    "kv read",
+    "bao token for a command",
+    "fetch secret from vault",
+    "openbao userpass login",
+    "revoke vault token after use",
+    "run with delegated openbao token"
+  ],
+  "tags": ["openbao", "vault", "secrets"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "bao-run",
+  "language": "bash",
+  "side_effects": "remote-write",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "the command succeeded; any code not listed here is the command's own exit status",
+    "3": "a setting is missing or invalid, the config file is unusable, or curl or jq is missing",
+    "64": "usage error",
+    "65": "access file unreadable, password line missing, or delegated token file unreadable or empty",
+    "66": "login failed",
+    "126": "the command is not executable (token revoked)",
+    "127": "the command was not found (token revoked)",
+    "129": "HUP received: the command was stopped and the token revoked",
+    "130": "INT received before the command started, or under Bash older than 4.4 (TERM forwarded)",
+    "143": "TERM received: the command was stopped and the token revoked"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["curl", "jq"],
+  "config": ["openbao.addr", "openbao.user", "openbao.access_file"],
+  "test": "bash test.sh",
+  "replaces": [
+    "curl\\b.*/v1/auth/userpass/login",
+    "curl\\b.*X-Vault-Token",
+    "X-Vault-Token.*\\|\\s*curl\\b",
+    ":8200/v1/kv/",
+    "\\bbao login\\b.*userpass"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "agent-dry-v1 issue 12: promote the OpenBao wrapper as bao-run",
+    "promoted_from": "abualruz-homelab/scripts/bao-operator-run.sh"
+  }
+}
