@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "stable-tool",
+  "summary": "Use when listing fixture items",
+  "intents": ["list fixture items", "show fixture items", "fixture inventory"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "stable-tool",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "ok", "2": "usage"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "active",
+  "origin": {"date": "2026-09-01", "builder": "fixture-model", "task": "fixture-task"}
+}

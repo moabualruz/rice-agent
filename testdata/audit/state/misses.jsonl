@@ -1,0 +1,7 @@
+{"ts":"2026-10-12T09:00:00Z","query":"run SENTINEL-QUERY on host over ssh","tokens":["host","run","ssh"],"project":"alpha","harness":"claude","session":"11111111-aaaa-4aaa-8aaa-000000000001"}
+{"ts":"2026-10-13T09:00:00Z","query":"ssh host run","tokens":["ssh","host","run"],"project":"alpha","harness":"claude"}
+{"ts":"2026-10-14T09:00:00Z","query":"watch pr checks","tokens":["check","pr","watch"],"project":"beta","harness":"codex"}
+{"ts":"2026-08-01T09:00:00Z","query":"old query","tokens":["old","query"],"project":"beta","harness":"claude"}
+{"date":"2026-10-15","keywords":"bao kv login","project":"beta"}
+{"ts":"2026-10-16T09:00:00Z","query":"deploy with token","tokens":["deploy","hvs.fixtureREDACTME"],"project":"alpha","harness":"claude"}
+not json

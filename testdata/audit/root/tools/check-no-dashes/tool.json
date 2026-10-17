@@ -1,0 +1,19 @@
+{
+  "schema": "tool/v1",
+  "name": "check-no-dashes",
+  "summary": "Use when checking files for em or en dashes",
+  "intents": ["check for dashes", "scan em dash", "dash check before commit"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "check-no-dashes",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "clean", "1": "dashes found", "2": "usage"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "replaces": [
+    "(?:^|[\\s;&|(])(?:rg|grep)\\s.*(?:\\\\x\\{?201[34]\\}?|\\\\u201[34]|\\x{2014}|\\x{2013})"
+  ],
+  "status": "trial",
+  "origin": {"date": "2026-10-10", "builder": "fixture-model", "task": "fixture-task", "promoted_from": "scripts/check-no-dashes.sh"}
+}
