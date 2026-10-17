@@ -260,7 +260,8 @@ func linkProblem(l Link) string {
 	return ""
 }
 
-// newestManifest returns the newest modification time over tools/*/tool.json and wanted.json.
+// newestManifest returns the newest modification time over tools/*/tool.json, wanted.json and
+// providers.json.
 func newestManifest(root string) (time.Time, string) {
 	var newest time.Time
 	var newestPath string
@@ -270,6 +271,7 @@ func newestManifest(root string) (time.Time, string) {
 		}
 	}
 	consider(filepath.Join(root, paths.Marker))
+	consider(filepath.Join(root, "registry", "providers.json"))
 	matches, _ := filepath.Glob(filepath.Join(root, "tools", "*", manifest.FileName))
 	for _, m := range matches {
 		consider(m)

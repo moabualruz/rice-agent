@@ -1,0 +1,37 @@
+{
+  "schema": "provider/v1",
+  "providers": [
+    {
+      "name": "dupe-finder",
+      "summary": "Use when finding copy-pasted code blocks across several repositories.",
+      "intents": ["find duplicate code across repositories", "copy paste detection", "clone report as sarif"],
+      "command": "dupe-finder",
+      "owner": "upstream:https://example.com/dupe-finder",
+      "license": "MIT",
+      "install": "brew install dupe-finder",
+      "homepage": "https://example.com/dupe-finder",
+      "notes": "Fixture entry whose command is on the fixture PATH and prints 45 help lines."
+    },
+    {
+      "name": "token-meter",
+      "summary": "Use when reporting agent token usage and cost from local session logs.",
+      "intents": ["token usage cost", "agent spend per day", "offline usage json"],
+      "command": "token-meter",
+      "owner": "project:example/token-meter",
+      "license": "Apache-2.0",
+      "install": "npm install -g token-meter",
+      "homepage": "https://example.com/token-meter",
+      "requires_policy_check": true
+    },
+    {
+      "name": "sym-rename",
+      "summary": "Use when renaming a symbol through a language server.",
+      "intents": ["rename symbol", "rename identifier in every file", "language server rename"],
+      "command": "srn",
+      "owner": "upstream:https://example.com/srn",
+      "license": "MIT OR Apache-2.0",
+      "install": "go install example.com/srn@latest",
+      "homepage": "https://example.com/srn"
+    }
+  ]
+}

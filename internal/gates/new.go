@@ -52,7 +52,8 @@ type projectEntry struct {
 
 const newUsage = `Usage: agent-dry new <name> --kind script|cli|skill --scope global|project --task <ref> [flags]
 
-Run the duplicate check (gate G2; here it also counts skills installed in your home directory),
+Run the duplicate check (gate G2, against this repository's own tools and skills; run agent-dry find
+first for installed skills and external CLIs),
 then scaffold a tool that already passes its tests and agent-dry check. Global tools go to
 <root>/tools/<name>/; project tools to <git root>/scripts/, listed in <git root>/.agent-dry.json;
 skills to skills/<name>/SKILL.md (project scope: .agents/skills/<name>/SKILL.md). Existing files

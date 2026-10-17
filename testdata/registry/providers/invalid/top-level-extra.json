@@ -1,0 +1,20 @@
+{
+  "schema": "provider/v1",
+  "providers": [
+    {
+      "name": "dupe-finder",
+      "summary": "Use when finding duplicated code across repositories.",
+      "intents": [
+        "find duplicate code",
+        "copy paste detection",
+        "clone report"
+      ],
+      "command": "dupe-finder",
+      "owner": "upstream:https://example.com/dupe-finder",
+      "license": "MIT",
+      "install": "brew install dupe-finder",
+      "homepage": "https://example.com/dupe-finder"
+    }
+  ],
+  "families": []
+}

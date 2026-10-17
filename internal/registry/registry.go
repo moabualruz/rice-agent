@@ -9,9 +9,11 @@
 //
 // Sources: agent-dry tools (listed statuses) and skills, the current project's commands (just
 // recipes, package.json scripts, Makefile targets, executable scripts/*, .agent-dry.json), installed
-// skills (~/.agents/skills, ~/.claude/skills, project .agents/skills and .claude/skills), wanted
-// families and the miss log. Search ranks only things that exist; wanted families and earlier
-// misses are hints that find prints separately.
+// skills (~/.agents/skills, ~/.claude/skills, project .agents/skills and .claude/skills), external
+// providers (registry/providers.json: mature CLIs from upstream or other owner projects, listed as
+// data with no wrapper code), wanted families and the miss log. Search ranks only things that
+// exist; wanted families and earlier misses are hints that find prints separately. An external
+// provider ranks like a tool and carries whether its command resolves on PATH at query time.
 package registry
 
 import (
@@ -29,18 +31,24 @@ import (
 type Result struct {
 	Name    string  `json:"name"`
 	Summary string  `json:"summary"`
-	Kind    string  `json:"kind"`   // script, cli, skill, recipe
+	Kind    string  `json:"kind"`   // script, cli, skill, recipe, external
 	Scope   string  `json:"scope"`  // global or project
 	Entry   string  `json:"entry"`  // command or path to run or read
-	Source  string  `json:"source"` // agent-dry, project:just, project:npm, project:make, project:scripts, project:agent-dry, skill
+	Source  string  `json:"source"` // agent-dry, project:just, project:npm, project:make, project:scripts, project:agent-dry, skill, external
 	Score   float64 `json:"score"`
+
+	// External providers only: whether Entry resolves on PATH now, and the install hint.
+	Installed *bool  `json:"installed,omitempty"`
+	Install   string `json:"install,omitempty"`
 }
 
 // Options select the sources Load reads.
 type Options struct {
 	ProjectRoot string // Git root to discover project commands from; empty means the working directory's root
 	NoProject   bool   // skip project discovery (used by gates and tests)
-	NoInstalled bool   // skip skills installed under HOME, so scores do not depend on the host (admission gates)
+	// NoInstalled is admission mode: skip skills installed under HOME and external providers, so
+	// duplicate scores compare owned entries only and do not depend on the host.
+	NoInstalled bool
 }
 
 // Threshold is the minimum score for a result to count as a match. Scores are BM25F over name,
@@ -54,23 +62,27 @@ const (
 	srcAgentDry = "agent-dry"
 	srcSkill    = "skill"
 	srcWanted   = "wanted"
+	srcExternal = "external"
+
+	kindExternal = "external"
 )
 
 // doc is one indexed entry. The exported fields are cached in index.json.
 type doc struct {
-	Name    string         `json:"name"`
-	Summary string         `json:"summary,omitempty"`
-	Intents []string       `json:"intents,omitempty"`
-	Tags    []string       `json:"tags,omitempty"`
-	Kind    string         `json:"kind"`
-	Scope   string         `json:"scope"`
-	Entry   string         `json:"entry"`
-	Source  string         `json:"source"`
-	Path    string         `json:"path,omitempty"`    // defining file or tool directory
-	Command string         `json:"command,omitempty"` // package.json script body
-	Hidden  bool           `json:"hidden,omitempty"`  // deprecated or retired tool: show only
-	Tool    *manifest.Tool `json:"tool,omitempty"`
-	Wanted  *Family        `json:"wanted,omitempty"`
+	Name     string         `json:"name"`
+	Summary  string         `json:"summary,omitempty"`
+	Intents  []string       `json:"intents,omitempty"`
+	Tags     []string       `json:"tags,omitempty"`
+	Kind     string         `json:"kind"`
+	Scope    string         `json:"scope"`
+	Entry    string         `json:"entry"`
+	Source   string         `json:"source"`
+	Path     string         `json:"path,omitempty"`    // defining file or tool directory
+	Command  string         `json:"command,omitempty"` // package.json script body
+	Hidden   bool           `json:"hidden,omitempty"`  // deprecated or retired tool: show only
+	Tool     *manifest.Tool `json:"tool,omitempty"`
+	Wanted   *Family        `json:"wanted,omitempty"`
+	Provider *Provider      `json:"provider,omitempty"`
 
 	tf   map[string][nFields]int
 	lens [nFields]int
@@ -183,6 +195,7 @@ func load(getenv func(string) string, opts Options, rebuild bool) (*Index, error
 	add(projectSkills)
 	if !opts.NoInstalled {
 		add(c.Installed)
+		add(c.Providers)
 	}
 	add(c.Wanted)
 	ix.prepare()
@@ -335,7 +348,7 @@ func (ix *Index) Search(query string, limit int) []Result {
 	}
 	out := make([]Result, 0, len(ranked))
 	for _, r := range ranked {
-		out = append(out, Result{
+		res := Result{
 			Name:    r.d.Name,
 			Summary: r.d.Summary,
 			Kind:    r.d.Kind,
@@ -343,7 +356,12 @@ func (ix *Index) Search(query string, limit int) []Result {
 			Entry:   ix.displayEntry(r.d),
 			Source:  r.d.Source,
 			Score:   math.Round(r.s*100) / 100,
-		})
+		}
+		if p := r.d.Provider; p != nil {
+			installed := ix.installedAt(p) != ""
+			res.Installed, res.Install = &installed, p.Install
+		}
+		out = append(out, res)
 	}
 	return out
 }
@@ -402,11 +420,13 @@ func sameFile(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-// lookup returns every document named name (case-insensitive), in priority order.
+// lookup returns every document named name (case-insensitive), in priority order. An external
+// provider also answers to its command name.
 func (ix *Index) lookup(name string) []*doc {
 	var out []*doc
 	for _, d := range ix.docs {
-		if strings.EqualFold(d.Name, name) || (d.Wanted != nil && strings.EqualFold(d.Wanted.SuggestedName, name)) {
+		if strings.EqualFold(d.Name, name) || (d.Wanted != nil && strings.EqualFold(d.Wanted.SuggestedName, name)) ||
+			(d.Provider != nil && strings.EqualFold(d.Provider.Command, name)) {
 			out = append(out, d)
 		}
 	}

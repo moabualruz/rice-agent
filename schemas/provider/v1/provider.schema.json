@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/moabualruz/agent-dry/schemas/provider/v1/provider.schema.json",
+  "title": "agent-dry external provider registry v1",
+  "description": "registry/providers.json: mature CLIs installed from upstream or from other owner projects, listed as data so find and show surface them; agent-dry ships no wrapper code for them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "providers"],
+  "properties": {
+    "schema": { "const": "provider/v1" },
+    "providers": { "type": "array", "items": { "$ref": "#/$defs/provider" } }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "summary", "intents", "command", "owner", "license", "install", "homepage"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$", "maxLength": 40 },
+        "summary": { "type": "string", "minLength": 10, "maxLength": 90, "pattern": "^Use when " },
+        "intents": {
+          "type": "array", "minItems": 3, "maxItems": 12, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 3, "maxLength": 60 }
+        },
+        "command": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$", "maxLength": 64 },
+        "owner": { "type": "string", "pattern": "^(upstream:https://[^\\s]+|project:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$" },
+        "license": { "type": "string", "pattern": "^\\(?[A-Za-z0-9.+-]+\\)?( (AND|OR|WITH) \\(?[A-Za-z0-9.+-]+\\)?)*$" },
+        "install": { "type": "string", "minLength": 3, "maxLength": 120, "pattern": "^[^\\r\\n]+$" },
+        "homepage": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+        "notes": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "requires_policy_check": { "type": "boolean" }
+      }
+    }
+  }
+}

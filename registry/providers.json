@@ -1,0 +1,212 @@
+{
+  "schema": "provider/v1",
+  "providers": [
+    {
+      "name": "rice-edit",
+      "summary": "Use when a symbol rename, file move or code navigation needs a plan-verified edit.",
+      "intents": [
+        "rename symbol project wide",
+        "move file and update imports",
+        "semantic refactor with a verified plan",
+        "go to definition and find references",
+        "language server diagnostics",
+        "structural search and rewrite",
+        "preview edit diff before apply",
+        "journaled edit with recovery"
+      ],
+      "command": "rice-edit",
+      "owner": "project:moabualruz/rice-edit",
+      "license": "Apache-2.0",
+      "install": "provided by rice-edit releases",
+      "homepage": "https://github.com/moabualruz/rice-edit",
+      "notes": "Go, TypeScript, Rust, Java and Dart. Flow: rice-edit plan semantic (rename, move) or plan structural, then plan freeze, apply and verify; navigate, symbols and diagnostics read code. Structural rewrites are experimental and pin ast-grep 0.50.0. rice-edit help lists the verbs."
+    },
+    {
+      "name": "gopls",
+      "summary": "Use when renaming, extracting or inlining Go code with the Go language server.",
+      "intents": [
+        "rename go symbol",
+        "extract function in go",
+        "inline call in go",
+        "find references in go code",
+        "go to definition in go",
+        "go workspace symbol search",
+        "go diagnostics for a file"
+      ],
+      "command": "gopls",
+      "owner": "upstream:https://github.com/golang/tools",
+      "license": "BSD-3-Clause",
+      "install": "go install golang.org/x/tools/gopls@latest",
+      "homepage": "https://pkg.go.dev/golang.org/x/tools/gopls",
+      "notes": "CLI verbs: gopls rename -w file.go:#offset NewName, gopls codeaction (extract, inline), references, definition, check, workspace_symbol. rice-edit drives the same server with a verified plan."
+    },
+    {
+      "name": "rust-analyzer",
+      "summary": "Use when renaming Rust symbols or running structural search and replace on Rust code.",
+      "intents": [
+        "rename rust symbol",
+        "structural search and replace in rust",
+        "search rust code by pattern",
+        "rust diagnostics for a project",
+        "rust language server"
+      ],
+      "command": "rust-analyzer",
+      "owner": "upstream:https://github.com/rust-lang/rust-analyzer",
+      "license": "MIT OR Apache-2.0",
+      "install": "rustup component add rust-analyzer",
+      "homepage": "https://rust-analyzer.github.io",
+      "notes": "rust-analyzer ssr '$a.foo($b) ==>> bar($a, $b)' rewrites and rust-analyzer search finds by the same pattern; rename goes through the language server, for example with rice-edit."
+    },
+    {
+      "name": "typescript-language-server",
+      "summary": "Use when an editor or rice-edit needs a TypeScript or JavaScript language server.",
+      "intents": [
+        "rename typescript symbol",
+        "typescript find references",
+        "javascript language server",
+        "typescript diagnostics"
+      ],
+      "command": "typescript-language-server",
+      "owner": "upstream:https://github.com/typescript-language-server/typescript-language-server",
+      "license": "Apache-2.0",
+      "install": "npm install -g typescript-language-server typescript",
+      "homepage": "https://github.com/typescript-language-server/typescript-language-server",
+      "notes": "A server only (typescript-language-server --stdio); drive it from an editor or through rice-edit, not directly from a shell."
+    },
+    {
+      "name": "ast-grep",
+      "summary": "Use when searching or rewriting code by syntax tree pattern instead of plain text.",
+      "intents": [
+        "structural search and rewrite",
+        "search code by ast pattern",
+        "rewrite code by syntax tree pattern",
+        "lint code with structural rules",
+        "codemod a whole repository"
+      ],
+      "command": "ast-grep",
+      "owner": "upstream:https://github.com/ast-grep/ast-grep",
+      "license": "MIT",
+      "install": "brew install ast-grep",
+      "homepage": "https://ast-grep.github.io",
+      "notes": "ast-grep run -p PATTERN -r REWRITE previews; -U applies; --json for machine output. rice-edit pins ast-grep 0.50.0 for its structural plans; some installs also link it as sg."
+    },
+    {
+      "name": "jscpd",
+      "summary": "Use when finding duplicated code within or across repositories, with JSON or SARIF.",
+      "intents": [
+        "find duplicate code across repositories",
+        "copy paste detection",
+        "detect cloned code blocks",
+        "duplication report as json or sarif",
+        "cross repository clone report",
+        "near miss and renamed clones"
+      ],
+      "command": "jscpd",
+      "owner": "upstream:https://github.com/kucherenko/jscpd",
+      "license": "MIT",
+      "install": "brew install jscpd",
+      "homepage": "https://github.com/kucherenko/jscpd",
+      "notes": "v5 is a self-contained Rust binary (no Node at runtime). jscpd repo-a repo-b --skip-local keeps only clones that cross the scan roots; --reporters json or sarif."
+    },
+    {
+      "name": "ccusage",
+      "summary": "Use when reporting local agent token usage and cost by day, week, month or session.",
+      "intents": [
+        "token usage cost",
+        "agent spend per day",
+        "claude code token usage report",
+        "codex token usage report",
+        "usage by session or month",
+        "offline usage json"
+      ],
+      "command": "ccusage",
+      "owner": "upstream:https://github.com/ccusage/ccusage",
+      "license": "MIT",
+      "install": "npm install -g ccusage",
+      "homepage": "https://github.com/ccusage/ccusage",
+      "notes": "Reads the local logs of 18 agent CLIs. ccusage daily, weekly, monthly or session; add --json for machine output and --offline to skip the pricing fetch. Also runs as bunx ccusage."
+    },
+    {
+      "name": "osv-scanner",
+      "summary": "Use when scanning dependencies for known vulnerabilities or disallowed licenses.",
+      "intents": [
+        "scan dependencies for vulnerabilities",
+        "check lockfile against osv database",
+        "dependency license check",
+        "vulnerability report as sarif or json",
+        "audit a repository for vulnerable packages"
+      ],
+      "command": "osv-scanner",
+      "owner": "upstream:https://github.com/google/osv-scanner",
+      "license": "Apache-2.0",
+      "install": "brew install osv-scanner",
+      "homepage": "https://google.github.io/osv-scanner",
+      "notes": "osv-scanner scan source -r . for a checkout; --licenses ALLOWLIST checks licenses; --format json, sarif or cyclonedx."
+    },
+    {
+      "name": "syft",
+      "summary": "Use when generating an SBOM for a directory, archive or container image.",
+      "intents": [
+        "generate sbom",
+        "software bill of materials",
+        "list packages in a container image",
+        "spdx or cyclonedx inventory"
+      ],
+      "command": "syft",
+      "owner": "upstream:https://github.com/anchore/syft",
+      "license": "Apache-2.0",
+      "install": "brew install syft",
+      "homepage": "https://github.com/anchore/syft",
+      "notes": "syft dir:. -o spdx-json or -o cyclonedx-json; feed the SBOM to osv-scanner or trivy."
+    },
+    {
+      "name": "trivy",
+      "summary": "Use when scanning images, filesystems or repositories for vulnerabilities and licenses.",
+      "intents": [
+        "scan container image for vulnerabilities",
+        "license scan of a filesystem",
+        "misconfiguration scan",
+        "secret scan of a repository",
+        "vulnerability scan with a shared server"
+      ],
+      "command": "trivy",
+      "owner": "upstream:https://github.com/aquasecurity/trivy",
+      "license": "Apache-2.0",
+      "install": "brew install trivy",
+      "homepage": "https://trivy.dev",
+      "notes": "trivy fs --scanners vuln,license . for a checkout. The owner runs a shared Trivy server on mkh-pc port 4954; use client mode with --server and take its address from configuration."
+    },
+    {
+      "name": "renovate",
+      "summary": "Use when keeping pinned dependency and tool versions current through update PRs.",
+      "intents": [
+        "keep pinned versions current",
+        "automated dependency update pull requests",
+        "bump vendored release versions",
+        "update agent-dry vendored releases"
+      ],
+      "command": "renovate",
+      "owner": "upstream:https://github.com/renovatebot/renovate",
+      "license": "AGPL-3.0-only",
+      "install": "npm install -g renovate",
+      "homepage": "https://docs.renovatebot.com",
+      "notes": "Self-hosted: run it as a scheduled job or service, not per edit. It also keeps vendored agent-dry releases current in consuming repositories."
+    },
+    {
+      "name": "shellcheck",
+      "summary": "Use when linting shell scripts for quoting, portability and correctness bugs.",
+      "intents": [
+        "lint shell script",
+        "check bash quoting",
+        "shell script static analysis",
+        "find shell portability bugs"
+      ],
+      "command": "shellcheck",
+      "owner": "upstream:https://github.com/koalaman/shellcheck",
+      "license": "GPL-3.0-or-later",
+      "install": "brew install shellcheck",
+      "homepage": "https://www.shellcheck.net",
+      "notes": "shellcheck -x script.sh follows sourced files; -f json1 or gcc for machine output."
+    }
+  ]
+}

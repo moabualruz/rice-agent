@@ -98,6 +98,7 @@ func TestSources(t *testing.T) {
 				srcScripts:  {"rotate-logs"},
 				srcProjFile: {"seed-demo-data"},
 				srcWanted:   {"node-environment-shim", "named-jq-filters"},
+				srcExternal: {"dupe-finder", "token-meter", "sym-rename"},
 			}
 			for src, names := range want {
 				if len(by[src]) != len(names) {
@@ -183,6 +184,9 @@ func TestNoInstalled(t *testing.T) {
 	for _, d := range without.docs {
 		if d.Source == srcSkill && !strings.HasPrefix(d.Path, without.root) {
 			t.Errorf("NoInstalled loaded installed skill %s from %s", d.Name, d.Path)
+		}
+		if d.Source == srcExternal || d.Provider != nil {
+			t.Errorf("NoInstalled loaded external provider %s", d.Name)
 		}
 	}
 }
@@ -621,7 +625,7 @@ func TestIndexCache(t *testing.T) {
 	root := copyTree(t, fixture("root"))
 	getenv := testEnv(t, map[string]string{"AGENT_DRY_ROOT": root})
 	code, out, errOut := run(t, getenv, "index")
-	if code != 0 || !strings.HasPrefix(out, "index rebuilt: 3 tools, 1 skills, 3 installed skills, 2 wanted families at ") {
+	if code != 0 || !strings.HasPrefix(out, "index rebuilt: 3 tools, 1 skills, 3 installed skills, 3 external providers, 2 wanted families at ") {
 		t.Fatalf("first index: exit %d %q %q", code, out, errOut)
 	}
 	if code, out, _ = run(t, getenv, "index"); code != 0 || !strings.HasPrefix(out, "index fresh:") {
@@ -700,6 +704,49 @@ func TestGuide(t *testing.T) {
 	}
 	if code, out, _ := run(t, getenv, "guide", "tools"); code != 0 || out != docs.ToolContract {
 		t.Errorf("guide tools: exit %d", code)
+	}
+	// Every embedded topic prints, and --list names them.
+	topics := docs.Topics()
+	if code, out, _ := run(t, getenv, "guide", "--list"); code != 0 || out != strings.Join(topics, "\n")+"\n" {
+		t.Errorf("guide --list: exit %d %q, want %v", code, out, topics)
+	}
+	for _, name := range topics {
+		want, _ := docs.Topic(name)
+		if code, out, _ := run(t, getenv, "guide", name); code != 0 || out == "" || out != want {
+			t.Errorf("guide %s: exit %d, %d bytes", name, code, len(out))
+		}
+	}
+}
+
+// TestGuideTopics drives guide through a fake docs source.
+func TestGuideTopics(t *testing.T) {
+	saved := guideDocs
+	t.Cleanup(func() { guideDocs = saved })
+	fake := map[string]string{"alpha": "Alpha topic.\n", "tools": "Tool contract.\n"}
+	guideDocs.guide = "Main guide.\n"
+	guideDocs.topic = func(name string) (string, bool) { s, ok := fake[name]; return s, ok }
+	guideDocs.topics = func() []string { return []string{"alpha", "tools"} }
+
+	getenv := testEnv(t, nil)
+	cases := []struct {
+		args []string
+		code int
+		out  string
+		err  string
+	}{
+		{nil, 0, "Main guide.\n", ""},
+		{[]string{"alpha"}, 0, "Alpha topic.\n", ""},
+		{[]string{"tools"}, 0, "Tool contract.\n", ""},
+		{[]string{"--list"}, 0, "alpha\ntools\n", ""},
+		{[]string{"beta"}, cli.ExitUsage, "", `unknown topic "beta"; topics: alpha, tools`},
+		{[]string{"alpha", "tools"}, cli.ExitUsage, "", "at most one topic"},
+		{[]string{"--bogus"}, cli.ExitUsage, "", "unknown flag --bogus"},
+	}
+	for _, c := range cases {
+		code, out, errOut := run(t, getenv, append([]string{"guide"}, c.args...)...)
+		if code != c.code || out != c.out || !strings.Contains(errOut, c.err) {
+			t.Errorf("guide %v: exit %d out %q err %q, want %d %q %q", c.args, code, out, errOut, c.code, c.out, c.err)
+		}
 	}
 }
 

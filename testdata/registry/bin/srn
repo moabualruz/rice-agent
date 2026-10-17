@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fixture external CLI with a short help.
+echo "Usage: srn <file> <offset> <new-name>"

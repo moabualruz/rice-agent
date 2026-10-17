@@ -1,0 +1,21 @@
+{
+  "schema": "provider/v1",
+  "providers": [
+    {
+      "name": "dupe-finder",
+      "summary": "Use when finding duplicated code across repositories.",
+      "intents": [
+        "find duplicate code",
+        "copy paste detection",
+        "clone report"
+      ],
+      "command": "dupe-finder",
+      "owner": "project:example/dupe-finder",
+      "license": "MIT OR Apache-2.0",
+      "install": "brew install dupe-finder",
+      "homepage": "https://example.com/dupe-finder",
+      "notes": "Python inside; run only its CLI.",
+      "requires_policy_check": true
+    }
+  ]
+}

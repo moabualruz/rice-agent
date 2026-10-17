@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fixture external CLI: prints 45 help lines.
+i=1
+while [ "$i" -le 45 ]; do
+  echo "dupe-finder help line $i"
+  i=$((i + 1))
+done

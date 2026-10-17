@@ -20,7 +20,7 @@ import (
 const WantedSchema = "wanted/v1"
 
 // cacheVersion changes whenever the cached document shape changes.
-const cacheVersion = 1
+const cacheVersion = 2
 
 // IndexFile is the cache file name inside StateDir.
 const IndexFile = "index.json"
@@ -49,6 +49,7 @@ type cacheFile struct {
 	Tools     []*doc   `json:"tools"`
 	Skills    []*doc   `json:"skills"`
 	Installed []*doc   `json:"installed"`
+	Providers []*doc   `json:"providers"`
 	Wanted    []*doc   `json:"wanted"`
 	Warnings  []string `json:"warnings,omitempty"`
 }
@@ -125,8 +126,9 @@ func writeCache(dir, path string, c *cacheFile) error {
 	return nil
 }
 
-// buildCache reads the agent-dry tools, agent-dry skills, installed skills under home and the
-// wanted families. Paths are stamped before they are read so a concurrent edit invalidates.
+// buildCache reads the agent-dry tools, agent-dry skills, installed skills under home, the
+// external providers and the wanted families. Paths are stamped before they are read so a
+// concurrent edit invalidates; a missing providers.json is stamped too, so creating it does.
 func buildCache(root, home string) (*cacheFile, error) {
 	c := &cacheFile{Version: cacheVersion, Root: root, Home: home}
 	st := &c.Stamps
@@ -139,6 +141,9 @@ func buildCache(root, home string) (*cacheFile, error) {
 	c.Skills = readSkills(filepath.Join(root, "skills"), st, srcAgentDry, "global")
 	c.Installed = append(readSkills(filepath.Join(home, ".agents", "skills"), st, srcSkill, "global"),
 		readSkills(filepath.Join(home, ".claude", "skills"), st, srcSkill, "global")...)
+	providers, pwarns := readProviders(filepath.Join(root, ProvidersFile), st)
+	c.Providers = providers
+	c.Warnings = append(c.Warnings, pwarns...)
 	c.Wanted, err = readWanted(filepath.Join(root, "registry", "wanted.json"), st)
 	if err != nil {
 		return nil, err

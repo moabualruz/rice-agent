@@ -1,0 +1,29 @@
+{
+  "schema": "provider/v1",
+  "providers": [
+    {
+      "name": "dupe-finder",
+      "summary": "Use when finding duplicated code across repositories.",
+      "intents": [
+        "duplicate intent 0",
+        "duplicate intent 1",
+        "duplicate intent 2",
+        "duplicate intent 3",
+        "duplicate intent 4",
+        "duplicate intent 5",
+        "duplicate intent 6",
+        "duplicate intent 7",
+        "duplicate intent 8",
+        "duplicate intent 9",
+        "duplicate intent 10",
+        "duplicate intent 11",
+        "duplicate intent 12"
+      ],
+      "command": "dupe-finder",
+      "owner": "upstream:https://example.com/dupe-finder",
+      "license": "MIT",
+      "install": "brew install dupe-finder",
+      "homepage": "https://example.com/dupe-finder"
+    }
+  ]
+}

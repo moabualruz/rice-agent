@@ -10,3 +10,11 @@ var ToolV1 []byte
 
 // ToolV1ID is the $id of ToolV1.
 const ToolV1ID = "https://github.com/moabualruz/agent-dry/schemas/tool/v1/tool.schema.json"
+
+// ProviderV1 is the provider/v1 schema for registry/providers.json.
+//
+//go:embed provider/v1/provider.schema.json
+var ProviderV1 []byte
+
+// ProviderV1ID is the $id of ProviderV1.
+const ProviderV1ID = "https://github.com/moabualruz/agent-dry/schemas/provider/v1/provider.schema.json"

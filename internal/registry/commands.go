@@ -19,10 +19,10 @@ import (
 )
 
 func init() {
-	cli.Register(cli.Command{Name: "find", Summary: "rank existing tools, skills and project commands for intent words", Run: runFind})
+	cli.Register(cli.Command{Name: "find", Summary: "rank existing tools, skills, project commands and external CLIs for intent words", Run: runFind})
 	cli.Register(cli.Command{Name: "show", Summary: "print one entry's manifest, --help and how to run it", Run: runShow})
 	cli.Register(cli.Command{Name: "index", Summary: "build or refresh the cached lookup index", Run: runIndex})
-	cli.Register(cli.Command{Name: "guide", Summary: "print the DRY guide, or the tool contract with `guide tools`", Run: runGuide})
+	cli.Register(cli.Command{Name: "guide", Summary: "print the DRY guide or one embedded topic (`guide --list`)", Run: runGuide})
 }
 
 // DefaultLimit is the number of results find prints without --limit.
@@ -32,8 +32,10 @@ const maxLimit = 50
 
 const findUsage = `Usage: agent-dry find <words...> [--json] [--project <root>] [--limit N]
 Rank agent-dry tools and skills, the project's commands (just, package.json, Makefile, scripts/,
-.agent-dry.json), installed skills, wanted families and earlier misses for the intent words.
-Lines: name  summary  [kind scope] entry; hints: WANTED <family> and SEEN <date> <project>.
+.agent-dry.json), installed skills, external CLIs (registry/providers.json), wanted families and
+earlier misses for the intent words.
+Lines: name  summary  [kind scope] entry; an external CLI ends with (installed) or
+(missing: <install hint>), checked on PATH now; hints: WANTED <family> and SEEN <date> <project>.
 
 Options:
   --json            print {"results": [...], "hints": [...]}
@@ -47,15 +49,17 @@ Example: agent-dry find scan for em dash
 
 const showUsage = `Usage: agent-dry show <name> [--project <root>]
 Print an entry's manifest fields, the first 40 lines of its --help (agent-dry tools) or how to run
-it (project recipes and scripts), or the path to read (skills).
+it (project recipes and scripts), the path to read (skills), or an external CLI's provider fields
+and, when its command is on PATH, the first 30 lines of its --help.
 
 Exit codes: 0 shown, 1 no entry by that name, 2 usage error, 3 unreadable index or agent-dry root.
 Example: agent-dry show check-no-dashes
 `
 
 const indexUsage = `Usage: agent-dry index [--rebuild]
-Cache agent-dry tools, skills, installed skills and wanted families in <state>/index.json. find
-uses the cache while the source modification times are unchanged; project commands stay live.
+Cache agent-dry tools, skills, installed skills, external providers and wanted families in
+<state>/index.json. find uses the cache while the source modification times are unchanged; project
+commands and whether an external command is on PATH stay live.
 
 Options:
   --rebuild  rebuild even when the cache is fresh
@@ -64,10 +68,14 @@ Exit codes: 0 index fresh or rebuilt, 2 usage error, 3 unreadable root or index,
 Example: agent-dry index --rebuild
 `
 
-const guideUsage = `Usage: agent-dry guide [tools]
-Print the DRY guide (find, decide, reuse, extend, build, inline), or the tool contract with "tools".
+const guideUsage = `Usage: agent-dry guide [topic | --list]
+Print the DRY guide (find, decide, reuse, extend, build, inline), or one embedded topic: "tools" is
+the tool contract and every other docs/<topic>.md is a topic.
 
-Exit codes: 0 printed, 2 usage error.
+Options:
+  --list  print the topic names, one per line
+
+Exit codes: 0 printed, 2 usage error or unknown topic.
 Example: agent-dry guide tools
 `
 
@@ -201,6 +209,13 @@ func resultLine(r Result) string {
 		b.WriteString(s)
 	}
 	fmt.Fprintf(&b, "  [%s %s] %s", r.Kind, r.Scope, tailTruncate(r.Entry, 72))
+	if r.Installed != nil {
+		if *r.Installed {
+			b.WriteString(" (installed)")
+		} else {
+			fmt.Fprintf(&b, " (missing: %s)", truncate(r.Install, 72))
+		}
+	}
 	return b.String()
 }
 
@@ -351,6 +366,29 @@ func (ix *Index) showDoc(w io.Writer, d *doc) {
 		kv(w, "evidence", f.Evidence)
 		kv(w, "research", f.Research)
 		kv(w, "intents", strings.Join(f.Intents, "; "))
+	case d.Provider != nil:
+		p := d.Provider
+		at := ix.installedAt(p)
+		fmt.Fprintf(w, "%s  [%s %s] external CLI, no agent-dry wrapper\n", p.Name, d.Kind, d.Scope)
+		kv(w, "summary", p.Summary)
+		if at != "" {
+			kv(w, "command", p.Command+" (installed: "+ix.tilde(at)+")")
+		} else {
+			kv(w, "command", p.Command+" (missing: "+p.Install+")")
+		}
+		kv(w, "owner", p.Owner)
+		kv(w, "license", p.License)
+		kv(w, "install", p.Install)
+		kv(w, "homepage", p.Homepage)
+		if p.RequiresPolicyCheck {
+			kv(w, "policy check", "required: Python inside, so run only its supported CLI")
+		}
+		kv(w, "notes", p.Notes)
+		kv(w, "intents", strings.Join(p.Intents, "; "))
+		if at != "" {
+			fmt.Fprintf(w, "\n$ %s --help\n", p.Command)
+			fmt.Fprint(w, toolHelp(at, "", externalHelpLines))
+		}
 	case d.Kind == "skill":
 		fmt.Fprintf(w, "%s  [skill %s] %s\n", d.Name, d.Scope, d.Source)
 		kv(w, "description", d.Summary)
@@ -385,12 +423,17 @@ func exitCodes(m map[string]string) string {
 // helpTimeout bounds `<entry> --help` in show.
 var helpTimeout = 10 * time.Second
 
-// toolHelp runs `<entry> --help` in the tool directory and returns at most max lines.
+// externalHelpLines is how much of an external CLI's --help show prints.
+const externalHelpLines = 30
+
+// toolHelp runs `<entry> --help` in dir (the working directory when empty) and returns at most
+// max lines. NO_COLOR keeps terminal escapes out of the captured text.
 func toolHelp(entry, dir string, max int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), helpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, entry, "--help")
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "NO_COLOR=1")
 	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	var b strings.Builder
@@ -448,21 +491,43 @@ func runIndex(env *cli.Env) int {
 	if ix.fromCache {
 		state = "fresh"
 	}
-	fmt.Fprintf(env.Stdout, "index %s: %d tools, %d skills, %d installed skills, %d wanted families at %s\n",
-		state, tools, skills, ix.counts[srcSkill], ix.counts[srcWanted], ix.tilde(ix.indexPath()))
+	fmt.Fprintf(env.Stdout, "index %s: %d tools, %d skills, %d installed skills, %d external providers, %d wanted families at %s\n",
+		state, tools, skills, ix.counts[srcSkill], ix.counts[srcExternal], ix.counts[srcWanted], ix.tilde(ix.indexPath()))
 	return cli.ExitOK
 }
 
+// guideDocs is where guide reads its text: the embedded docs package. Tests replace it.
+var guideDocs = struct {
+	guide  string
+	topic  func(name string) (string, bool)
+	topics func() []string
+}{docs.Guide, docs.Topic, docs.Topics}
+
 func runGuide(env *cli.Env) int {
+	args := env.Args
 	switch {
-	case len(env.Args) == 0:
-		fmt.Fprint(env.Stdout, docs.Guide)
-	case len(env.Args) == 1 && isHelp(env.Args[0]):
+	case len(args) == 0:
+		fmt.Fprint(env.Stdout, guideDocs.guide)
+		return cli.ExitOK
+	case len(args) > 1:
+		return cli.Usagef(env, "guide: give at most one topic; see agent-dry guide --list")
+	case isHelp(args[0]):
 		fmt.Fprint(env.Stdout, guideUsage)
-	case len(env.Args) == 1 && env.Args[0] == "tools":
-		fmt.Fprint(env.Stdout, docs.ToolContract)
-	default:
-		return cli.Usagef(env, "guide: unknown topic %q; topics: tools", strings.Join(env.Args, " "))
+		return cli.ExitOK
+	case args[0] == "--list":
+		w := bufio.NewWriter(env.Stdout)
+		for _, t := range guideDocs.topics() {
+			fmt.Fprintln(w, t)
+		}
+		w.Flush()
+		return cli.ExitOK
+	case strings.HasPrefix(args[0], "-"):
+		return cli.Usagef(env, "guide: unknown flag %s; see agent-dry guide --help", args[0])
 	}
+	text, ok := guideDocs.topic(args[0])
+	if !ok {
+		return cli.Usagef(env, "guide: unknown topic %q; topics: %s", redact(args[0]), strings.Join(guideDocs.topics(), ", "))
+	}
+	fmt.Fprint(env.Stdout, text)
 	return cli.ExitOK
 }
