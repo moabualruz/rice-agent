@@ -1,0 +1,46 @@
+{
+  "schema": "tool/v1",
+  "name": "job-watch",
+  "summary": "Use when a long local command must run in the background and be watched",
+  "intents": [
+    "run job in background",
+    "watch background job",
+    "wait for long command",
+    "check if process still running",
+    "start detached process with log",
+    "tail background job log",
+    "stop background job",
+    "poll until command finishes",
+    "avoid sleep poll loop"
+  ],
+  "tags": ["background", "process", "poll", "wait"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "job-watch",
+  "language": "bash",
+  "side_effects": "write-local",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "started; status running or exited 0; wait saw exit 0; stop ended the group or had nothing to stop",
+    "1": "start refused (name still running); status exited non-zero or lost; wait lost; stop refused or group survived",
+    "2": "usage error or unknown job name",
+    "3": "environment failure: missing dependency, unwritable state, or the job did not start",
+    "4": "wait timed out with the job still running; otherwise wait returns the job's own exit status"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["ps", "awk", "bash"],
+  "test": "bash test.sh",
+  "replaces": [
+    "\\bps\\b[^|;&]*-o\\s*etime=",
+    "\\bpgrep\\b[^|;&]*\\s-[a-zA-Z]*f",
+    "(?s)\\b(while|until)\\b.*?;\\s*do\\b.*?\\bsleep\\s+[0-9]",
+    "\\bkill\\s+-0\\s+",
+    "\\bnohup\\s+\\S.*&"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "rice-kb:.scratch/agent-dry-v1/issues/10-job-watch-background-job-observer.md"
+  }
+}

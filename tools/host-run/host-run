@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+# host-run: run a command or a local Bash script on a host named in the agent-dry config.
+#
+# The only string a remote login shell (fish, bash, zsh, ...) ever parses is `bash -s`. The
+# command travels on ssh's stdin as a Bash script whose words are quoted with printf %q for the
+# remote bash, so the caller's stdin is never read and fish never sees POSIX syntax.
+set -euo pipefail
+
+PROG="host-run"
+DEFAULT_MAX_BYTES=20000
+DEFAULT_CONNECT_TIMEOUT=10
+
+usage() {
+  cat <<'EOF'
+Usage: host-run <host> [options] -- <command> [args...]
+       host-run <host> [options] --script <file> [args...]
+       host-run --list
+
+Run a command, or a local Bash script, on a host from the agent-dry config. The command is
+sent on stdin as a Bash script (ssh -T -o BatchMode=yes ... 'bash -s'), each argument quoted
+for the remote bash with printf %q, so no login shell (fish included) parses it and the
+caller's stdin is never consumed. The remote command's own stdin is /dev/null.
+
+Options (before -- or --script):
+  --script <file>          check <file> with bash -n locally, then run it remotely with args;
+                           everything after <file> (an optional leading -- is dropped) is args
+  --timeout <seconds>      overall limit for the run; also caps the ssh connect timeout
+  --connect-timeout <s>    ssh ConnectTimeout (default 10)
+  --tail <N>               print only the last N lines of stdout and of stderr
+  --max-bytes <N>          print at most N bytes of each stream (default 20000, 0 = no limit);
+                           when output is cut, the full output is saved and its path printed
+  --dry-run                print the ssh invocation and the script; contact nothing
+  --list                   print the configured hosts and exit
+  -h, --help               show this help
+
+Config: $AGENT_DRY_CONFIG, else ~/.config/agent-dry/config.json; reads hosts.<name>.ssh
+(user@address) and hosts.<name>.shell (informational; any login shell works).
+
+Exit codes:
+  0    remote command exited 0; any other remote exit status is returned unchanged
+  1    --script failed bash -n locally (host not contacted), or the remote command exited 1
+  2    usage error (bad option, missing command, missing script file)
+  3    setup failure: missing config, unknown host, missing dependency, or ssh connection
+       failed (ssh exit 255; a remote command exiting 255 is reported the same way)
+  124  --timeout expired; local ssh was stopped (remote processes may keep running)
+
+Example:
+  host-run mkh-pc -- printf '%s\n' 'a b' '$HOME' "it's"
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$PROG" "$1" >&2
+  exit "${2:-2}"
+}
+
+is_uint() {
+  case "${1:-}" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+need() {
+  local c
+  for c in "$@"; do
+    command -v "$c" >/dev/null 2>&1 || die "missing dependency: $c" 3
+  done
+}
+
+config_path() {
+  printf '%s' "${AGENT_DRY_CONFIG:-${HOME}/.config/agent-dry/config.json}"
+}
+
+# single_quote prints $1 inside single quotes, each ' written as '\''.
+single_quote() {
+  local s=$1 out=""
+  while :; do
+    case "$s" in
+      *\'*)
+        out="${out}${s%%\'*}'\\''"
+        s=${s#*\'}
+        ;;
+      *) break ;;
+    esac
+  done
+  printf "'%s%s'" "$out" "$s"
+}
+
+# quote_words prints its arguments as one line of Bash words, each quoted with printf %q.
+# Bash 3.2 (macOS /bin/bash) leaves ~ unquoted in %q output (`~`, `~user`, `a=~/x`), which the
+# remote bash would expand, so words containing ~ are single-quoted instead.
+quote_words() {
+  local out="" w q
+  for w in "$@"; do
+    case "$w" in
+      *~*) q=$(single_quote "$w") ;;
+      *) printf -v q '%q' "$w" ;;
+    esac
+    out="${out}${out:+ }${q}"
+  done
+  printf '%s' "$out"
+}
+
+list_hosts() {
+  local cfg
+  cfg=$(config_path)
+  [ -f "$cfg" ] || die "config not found: $cfg (set AGENT_DRY_CONFIG or add hosts.<name>.ssh)" 3
+  jq -r '(.hosts // {}) | to_entries[] | "\(.key)\t\(.value.ssh // "")\t\(.value.shell // "")"' "$cfg" ||
+    die "cannot read hosts from $cfg" 3
+}
+
+host=""
+mode=""
+script_file=""
+timeout=""
+connect_timeout=$DEFAULT_CONNECT_TIMEOUT
+connect_set=0
+tail_n=""
+max_bytes=$DEFAULT_MAX_BYTES
+dry_run=0
+words=()
+
+if [ $# -eq 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --list)
+      need jq
+      list_hosts
+      exit 0
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --timeout | --connect-timeout | --tail | --max-bytes)
+      [ $# -ge 2 ] || die "$1 needs a value"
+      is_uint "$2" || die "$1 needs a non-negative integer, got '$2'"
+      case "$1" in
+        --timeout) timeout=$2 ;;
+        --connect-timeout)
+          connect_timeout=$2
+          connect_set=1
+          ;;
+        --tail) tail_n=$2 ;;
+        --max-bytes) max_bytes=$2 ;;
+      esac
+      shift 2
+      ;;
+    --script)
+      [ $# -ge 2 ] || die "--script needs a file"
+      mode="script"
+      script_file=$2
+      shift 2
+      if [ "${1:-}" = "--" ]; then
+        shift
+      fi
+      words=("$@")
+      break
+      ;;
+    --)
+      shift
+      [ $# -gt 0 ] || die "nothing to run after --"
+      mode="command"
+      words=("$@")
+      break
+      ;;
+    -*)
+      die "unknown option: $1 (see --help)"
+      ;;
+    *)
+      [ -z "$host" ] || die "unexpected argument '$1'; put the command after --"
+      host=$1
+      shift
+      ;;
+  esac
+done
+
+[ -n "$host" ] || die "missing <host> (see --help)"
+[ -n "$mode" ] || die "missing -- <command> or --script <file> (see --help)"
+if [ -n "$timeout" ] && [ "$timeout" -eq 0 ]; then
+  die "--timeout must be at least 1"
+fi
+if [ -n "$tail_n" ] && [ "$tail_n" -eq 0 ]; then
+  die "--tail must be at least 1"
+fi
+if [ "$connect_timeout" -eq 0 ]; then
+  die "--connect-timeout must be at least 1"
+fi
+if [ -n "$timeout" ] && [ "$connect_set" -eq 0 ] && [ "$timeout" -lt "$connect_timeout" ]; then
+  connect_timeout=$timeout
+fi
+
+need jq bash
+if [ "$dry_run" -eq 0 ]; then
+  need ssh
+fi
+
+# Build the script that the remote bash reads from stdin.
+if [ "$mode" = script ]; then
+  [ -f "$script_file" ] || die "script not found: $script_file"
+  [ -r "$script_file" ] || die "script not readable: $script_file"
+  # bash -n never runs `shopt -s extglob`, so enable it for the check when the script does.
+  check_opts=()
+  if grep -Eq '^[[:space:]]*shopt[[:space:]]+-s[[:space:]].*extglob' "$script_file"; then
+    check_opts=(-O extglob)
+  fi
+  if ! syntax_err=$("${BASH:-bash}" ${check_opts[@]+"${check_opts[@]}"} -n "$script_file" 2>&1); then
+    printf '%s\n' "$syntax_err" >&2
+    die "bash -n failed for $script_file; host not contacted" 1
+  fi
+  body=$(cat "$script_file")
+  tag="HOST_RUN_EOF_$$_${RANDOM}"
+  while printf '%s\n' "$body" | grep -qxF "$tag"; do
+    tag="HOST_RUN_EOF_$$_${RANDOM}${RANDOM}"
+  done
+  # The body is read whole into a variable and run with eval, so commands in it that read
+  # stdin get /dev/null instead of the rest of the script, and options such as extglob set
+  # early in the body apply to later lines.
+  script="set -- $(quote_words ${words[@]+"${words[@]}"})
+IFS= read -r -d '' __host_run_body <<'${tag}' || :
+${body}
+${tag}
+eval \"\$__host_run_body\" </dev/null"
+else
+  script="$(quote_words "${words[@]}") </dev/null"
+fi
+
+# Resolve the host.
+cfg=$(config_path)
+[ -f "$cfg" ] || die "config not found: $cfg (set AGENT_DRY_CONFIG or add hosts.<name>.ssh)" 3
+target=$(jq -r --arg h "$host" '.hosts[$h].ssh // empty' "$cfg") || die "cannot parse config $cfg" 3
+login_shell=$(jq -r --arg h "$host" '.hosts[$h].shell // empty' "$cfg") || die "cannot parse config $cfg" 3
+if [ -z "$target" ]; then
+  known=$(jq -r '(.hosts // {}) | keys | join(", ")' "$cfg" 2>/dev/null || true)
+  die "unknown host '$host' in $cfg (configured: ${known:-none})" 3
+fi
+case "$target" in
+  -* | *[[:space:]]*) die "hosts.$host.ssh in $cfg must be user@address without spaces or a leading -" 3 ;;
+esac
+
+ssh_opts=(-T -o BatchMode=yes -o "ConnectTimeout=${connect_timeout}" -- "$target")
+ssh_args=("${ssh_opts[@]}" 'bash -s')
+
+if [ "$dry_run" -eq 1 ]; then
+  printf 'host: %s (login shell %s)\n' "$host" "${login_shell:-unknown}"
+  printf "invocation: ssh %s 'bash -s' < script\n" "$(quote_words "${ssh_opts[@]}")"
+  if [ -n "$timeout" ]; then
+    printf 'overall timeout: %ss\n' "$timeout"
+  else
+    printf 'overall timeout: none\n'
+  fi
+  printf 'script (sent on stdin):\n%s\n' "$script"
+  exit 0
+fi
+
+tmp_base=${TMPDIR:-/tmp}
+tmp_base=${tmp_base%/}
+tmpd=$(mktemp -d "${tmp_base}/host-run.XXXXXX") || die "cannot create a temporary directory" 3
+keep=0
+ssh_pid=""
+wd_pid=""
+
+# shellcheck disable=SC2329 # invoked by trap
+cleanup() {
+  if [ "$keep" -eq 1 ]; then
+    rm -f "$tmpd/script" "$tmpd"/*.shown
+  else
+    rm -rf "$tmpd"
+  fi
+}
+
+# shellcheck disable=SC2329 # invoked by trap
+on_signal() {
+  if [ -n "$wd_pid" ]; then kill -TERM "$wd_pid" 2>/dev/null || :; fi
+  if [ -n "$ssh_pid" ]; then kill -TERM "$ssh_pid" 2>/dev/null || :; fi
+  exit 130
+}
+
+trap cleanup EXIT
+trap on_signal INT TERM HUP
+
+printf '%s\n' "$script" >"$tmpd/script"
+
+ssh "${ssh_args[@]}" <"$tmpd/script" >"$tmpd/stdout" 2>"$tmpd/stderr" &
+ssh_pid=$!
+if [ -n "$timeout" ]; then
+  (
+    trap - EXIT INT TERM HUP
+    sp=""
+    trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; exit 0' TERM
+    sleep "$timeout" &
+    sp=$!
+    wait "$sp"
+    : >"$tmpd/timed-out"
+    kill -TERM "$ssh_pid" 2>/dev/null || :
+  ) </dev/null >/dev/null 2>&1 &
+  wd_pid=$!
+fi
+
+set +e
+wait "$ssh_pid"
+rc=$?
+set -e
+ssh_pid=""
+if [ -n "$wd_pid" ]; then
+  kill -TERM "$wd_pid" 2>/dev/null || :
+  wait "$wd_pid" 2>/dev/null || :
+  wd_pid=""
+fi
+
+notices=()
+
+# shown_copy writes the bounded view of a captured stream to <file>.shown.
+shown_copy() {
+  local f=$1 name=$2 full shown
+  full=$(wc -c <"$f" | tr -d '[:space:]')
+  if [ -n "$tail_n" ]; then
+    tail -n "$tail_n" "$f" >"$f.shown"
+  else
+    cp "$f" "$f.shown"
+  fi
+  if [ "$max_bytes" -gt 0 ]; then
+    shown=$(wc -c <"$f.shown" | tr -d '[:space:]')
+    if [ "$shown" -gt "$max_bytes" ]; then
+      tail -c "$max_bytes" "$f.shown" >"$f.cut"
+      mv "$f.cut" "$f.shown"
+    fi
+  fi
+  shown=$(wc -c <"$f.shown" | tr -d '[:space:]')
+  if [ "$shown" -lt "$full" ]; then
+    keep=1
+    notices+=("${PROG}: ${name} cut to the last ${shown} of ${full} bytes; full ${name}: ${f}")
+  fi
+}
+
+shown_copy "$tmpd/stdout" stdout
+shown_copy "$tmpd/stderr" stderr
+cat "$tmpd/stdout.shown"
+cat "$tmpd/stderr.shown" >&2
+if [ "${#notices[@]}" -gt 0 ]; then
+  printf '%s\n' "${notices[@]}" >&2
+fi
+
+if [ -e "$tmpd/timed-out" ]; then
+  printf '%s: timed out after %ss on %s; local ssh stopped, remote processes may still run\n' \
+    "$PROG" "$timeout" "$host" >&2
+  exit 124
+fi
+if [ "$rc" -eq 255 ]; then
+  printf '%s: connection failed: ssh to %s (%s) exited 255\n' "$PROG" "$host" "$target" >&2
+  exit 3
+fi
+exit "$rc"

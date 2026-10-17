@@ -1,0 +1,565 @@
+#!/usr/bin/env bash
+# job-watch: start a local command detached in its own process group, then observe, wait for
+# and stop it by name. Identity is PID plus process birth time, so a reused PID is never taken
+# for the job, and stop signals only the recorded process group.
+set -euo pipefail
+
+PROG="job-watch"
+DEFAULT_TAIL=20
+DEFAULT_MAX_BYTES=20000
+DEFAULT_WAIT=60
+DEFAULT_GRACE=5
+START_WAIT_TENTHS=100
+
+usage() {
+  cat <<'EOF'
+Usage: job-watch start --name <name> [--dry-run] -- <command> [args...]
+       job-watch status <name> [--tail N] [--max-bytes N]
+       job-watch wait <name> [--timeout SECONDS] [--tail N] [--max-bytes N]
+       job-watch stop <name> [--grace SECONDS] [--dry-run]
+       job-watch list
+
+Runs a command detached in its own process group with stdin from /dev/null and stdout and
+stderr in a log, and records pid, birth (ps lstart), pgid, cmd, log and exit under
+${AGENT_DRY_STATE:-~/.local/state/agent-dry}/jobs/<name>/. A PID whose birth time differs
+from the record is never reported as the job. start returns at once; wait polls internally,
+so no foreground sleep or poll loop is needed.
+
+Options:
+  --name <name>        job name: letters, digits, dot, dash, underscore; at most 64 (start)
+  --tail N             log lines to print (status, wait; default 20, 0 = none)
+  --max-bytes N        cap on printed log bytes (status, wait; default 20000)
+  --timeout SECONDS    how long wait blocks before exit 4 (default 60; 0 = check once)
+  --grace SECONDS      stop: wait this long after SIGTERM before SIGKILL (default 5)
+  --dry-run            start, stop: print the plan and change nothing
+  -h, --help           show this help
+
+A finished job with the same name is replaced by start; a running one is refused.
+
+Exit codes:
+  0  start: started; status: running or exited 0; wait: job exited 0; stop: group ended or
+     nothing to stop; list: listed
+  1  start: name still running; status: exited non-zero or lost; wait: job lost;
+     stop: refused (group identity changed) or the group survived SIGKILL
+  2  usage error or unknown job name
+  3  environment failure: missing dependency, unwritable state, or the job did not start
+  4  wait: --timeout expired with the job still running
+  N  wait: the job's own exit status when it exits (so 1 to 4 can also come from the job)
+
+Example:
+  job-watch start --name build -- make -j8 && job-watch wait build --timeout 100
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$PROG" "$1" >&2
+  exit "${2:-2}"
+}
+
+is_uint() {
+  case "${1:-}" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+need() {
+  local c
+  for c in "$@"; do
+    command -v "$c" >/dev/null 2>&1 || die "missing dependency: $c" 3
+  done
+}
+
+jobs_root() {
+  printf '%s/jobs' "${AGENT_DRY_STATE:-${HOME}/.local/state/agent-dry}"
+}
+
+valid_name() {
+  case "$1" in
+    '' | [!A-Za-z0-9]* | *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
+# proc_birth prints the normalized start time of a PID, or nothing when it does not exist.
+proc_birth() {
+  local out
+  out=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null) || return 0
+  # shellcheck disable=SC2086 # word splitting squeezes the padding ps adds
+  set -- $out
+  printf '%s' "$*"
+}
+
+proc_pgid() {
+  local out
+  out=$(ps -o pgid= -p "$1" 2>/dev/null) || return 0
+  # shellcheck disable=SC2086
+  set -- $out
+  printf '%s' "${1:-}"
+}
+
+# group_count prints how many live (non-zombie) processes are in process group $1.
+group_count() {
+  ps -A -o pgid= -o stat= 2>/dev/null | awk -v g="$1" '$1 == g && $2 !~ /^Z/ { n++ } END { print n + 0 }'
+}
+
+# readv VAR FILE reads the first line of $JDIR/FILE into VAR (empty when missing).
+readv() {
+  local v=""
+  if [ -f "$JDIR/$2" ]; then
+    IFS= read -r v <"$JDIR/$2" || :
+  fi
+  printf -v "$1" '%s' "$v"
+}
+
+write_atomic() { # file value
+  printf '%s\n' "$2" >"$1.tmp.$$"
+  mv -f "$1.tmp.$$" "$1"
+}
+
+fmt_elapsed() {
+  local s=$1
+  if [ "$s" -ge 3600 ]; then
+    printf '%dh%02dm%02ds' $((s / 3600)) $((s % 3600 / 60)) $((s % 60))
+  elif [ "$s" -ge 60 ]; then
+    printf '%dm%02ds' $((s / 60)) $((s % 60))
+  else
+    printf '%ds' "$s"
+  fi
+}
+
+# load_job NAME sets JDIR, J_* fields and STATE (running, exited or lost) plus NOTE.
+# Returns 1 when no record exists.
+load_job() {
+  JDIR="$(jobs_root)/$1"
+  [ -f "$JDIR/cmd" ] || return 1
+  readv J_PID pid
+  readv J_BIRTH birth
+  readv J_PGID pgid
+  readv J_CMD cmd
+  readv J_STARTED started
+  readv J_ENDED ended
+  readv J_EXIT exit
+  readv J_STOPPED stopped
+  NOTE=""
+  CUR_BIRTH=""
+  PID_REUSED=0
+  if [ -n "$J_PID" ]; then
+    CUR_BIRTH=$(proc_birth "$J_PID")
+    if [ -n "$CUR_BIRTH" ] && [ "$CUR_BIRTH" != "$J_BIRTH" ]; then
+      PID_REUSED=1
+    fi
+  fi
+  if [ -n "$J_EXIT" ]; then
+    STATE="exited"
+    return 0
+  fi
+  if [ -z "$J_PID" ]; then
+    STATE="lost"
+    NOTE="no pid recorded; the job never started"
+    return 0
+  fi
+  if [ -n "$CUR_BIRTH" ] && [ "$CUR_BIRTH" = "$J_BIRTH" ]; then
+    STATE="running"
+    return 0
+  fi
+  # The runner writes exit just before it ends; read again to close that race.
+  readv J_EXIT exit
+  readv J_ENDED ended
+  if [ -n "$J_EXIT" ]; then
+    STATE="exited"
+    return 0
+  fi
+  STATE="lost"
+  if [ -n "$CUR_BIRTH" ]; then
+    NOTE="pid $J_PID now belongs to another process (birth differs); not the job"
+  else
+    NOTE="the job ended without recording an exit status"
+  fi
+  return 0
+}
+
+elapsed_s() {
+  local end now
+  now=$(date +%s)
+  end=${J_ENDED:-$now}
+  if [ -n "$J_STARTED" ]; then
+    printf '%s' $((end - J_STARTED))
+  else
+    printf '0'
+  fi
+}
+
+print_status() { # name tail max_bytes
+  local name=$1 tail_n=$2 max_bytes=$3 lines members
+  printf 'job: %s\n' "$name"
+  printf 'state: %s\n' "$STATE"
+  if [ "$STATE" = exited ]; then
+    printf 'exit: %s\n' "$J_EXIT"
+  fi
+  if [ -n "$J_STOPPED" ]; then
+    printf 'stopped: %s\n' "$J_STOPPED"
+  fi
+  if [ -n "$NOTE" ]; then
+    printf 'note: %s\n' "$NOTE"
+  fi
+  printf 'pid: %s\npgid: %s\n' "${J_PID:--}" "${J_PGID:--}"
+  printf 'elapsed: %s\n' "$(fmt_elapsed "$(elapsed_s)")"
+  if [ "$STATE" != running ] && [ -n "$J_PGID" ] && [ "$PID_REUSED" -eq 0 ]; then
+    members=$(group_count "$J_PGID")
+    if [ "$members" -gt 0 ]; then
+      printf 'group: %s processes still in group %s (job-watch stop %s ends them)\n' "$members" "$J_PGID" "$name"
+    fi
+  fi
+  printf 'cmd: %s\n' "$J_CMD"
+  lines=0
+  if [ -f "$JDIR/log" ]; then
+    lines=$(wc -l <"$JDIR/log" | tr -d '[:space:]')
+  fi
+  if [ "$tail_n" -gt 0 ] && [ -s "$JDIR/log" ]; then
+    if [ "$lines" -gt "$tail_n" ]; then
+      printf 'log: %s (last %s of %s lines)\n' "$JDIR/log" "$tail_n" "$lines"
+    else
+      printf 'log: %s (%s lines)\n' "$JDIR/log" "$lines"
+    fi
+    if [ "$max_bytes" -gt 0 ]; then
+      tail -n "$tail_n" "$JDIR/log" | tail -c "$max_bytes"
+    else
+      tail -n "$tail_n" "$JDIR/log"
+    fi
+  else
+    printf 'log: %s (%s lines)\n' "$JDIR/log" "$lines"
+  fi
+}
+
+# --- subcommands -----------------------------------------------------------------------------
+
+cmd_start() {
+  local name="" dry=0 root i pid pgid self
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name)
+        [ $# -ge 2 ] || die "--name needs a value"
+        name=$2
+        shift 2
+        ;;
+      --dry-run)
+        dry=1
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *) die "start: unexpected argument '$1'; put the command after --" ;;
+    esac
+  done
+  [ -n "$name" ] || die "start needs --name <name>"
+  valid_name "$name" || die "invalid job name '$name' (letters, digits, dot, dash, underscore)"
+  [ $# -gt 0 ] || die "start needs a command after --"
+  root=$(jobs_root)
+  if load_job "$name" && [ "$STATE" = running ]; then
+    die "job '$name' is still running (pid $J_PID); stop it or pick another name" 1
+  fi
+  JDIR="$root/$name"
+  if [ "$dry" -eq 1 ]; then
+    printf 'dry run: would start job %s in its own process group\n' "$name"
+    printf 'cmd: %s\n' "$(quote_words "$@")"
+    printf 'cwd: %s\n' "$PWD"
+    printf 'log: %s/log\n' "$JDIR"
+    if [ -f "$JDIR/cmd" ]; then
+      printf 'replaces: the finished record of %s\n' "$name"
+    fi
+    return 0
+  fi
+  mkdir -p "$root" 2>/dev/null || die "cannot create state directory $root" 3
+  if [ -d "$JDIR" ]; then
+    rm -f "$JDIR"/pid "$JDIR"/birth "$JDIR"/pgid "$JDIR"/cmd "$JDIR"/cwd "$JDIR"/log \
+      "$JDIR"/exit "$JDIR"/started "$JDIR"/ended "$JDIR"/stopped
+  fi
+  mkdir -p "$JDIR" 2>/dev/null || die "cannot create $JDIR" 3
+  : >"$JDIR/log" 2>/dev/null || die "cannot write $JDIR/log" 3
+  write_atomic "$JDIR/cwd" "$PWD"
+  write_atomic "$JDIR/cmd" "$(quote_words "$@")"
+  self=${BASH_SOURCE[0]}
+  case "$self" in
+    /*) ;;
+    *) self="$PWD/$self" ;;
+  esac
+  # set -m gives the background job its own process group (pgid = its pid); the subshell
+  # exits at once, so the runner is not a child of the caller.
+  (
+    set -m
+    "${BASH:-bash}" "$self" __run "$JDIR" "$@" </dev/null >>"$JDIR/log" 2>&1 &
+  ) </dev/null >/dev/null 2>&1
+  i=0
+  while [ ! -f "$JDIR/pid" ] && [ "$i" -lt "$START_WAIT_TENTHS" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -f "$JDIR/pid" ] || die "job '$name' did not start within $((START_WAIT_TENTHS / 10))s; see $JDIR/log" 3
+  readv pid pid
+  readv pgid pgid
+  if [ "$pgid" != "$pid" ]; then
+    die "job '$name' (pid $pid) is not a process group leader (pgid $pgid); not tracking it safely" 3
+  fi
+  printf 'started: %s\npid: %s\npgid: %s\nlog: %s/log\n' "$name" "$pid" "$pgid" "$JDIR"
+}
+
+# __run is the detached group leader: it records its own identity, runs the command in the
+# foreground and writes the exit status. SIGTERM and SIGINT reach the whole group; the runner
+# traps them so it survives the command and still records how it ended.
+cmd_run() {
+  local rc birth pgid
+  JDIR=$1
+  shift
+  trap '' HUP
+  trap ':' TERM INT
+  birth=$(proc_birth "$$")
+  pgid=$(proc_pgid "$$")
+  write_atomic "$JDIR/started" "$(date +%s)"
+  write_atomic "$JDIR/birth" "$birth"
+  write_atomic "$JDIR/pgid" "$pgid"
+  write_atomic "$JDIR/pid" "$$"
+  set +e
+  "$@"
+  rc=$?
+  write_atomic "$JDIR/ended" "$(date +%s)"
+  write_atomic "$JDIR/exit" "$rc"
+  exit "$rc"
+}
+
+parse_view_opts() { # sets V_TAIL V_MAX V_TIMEOUT V_NAME from args; $1 is the subcommand
+  local sub=$1
+  shift
+  V_NAME=""
+  V_TAIL=$DEFAULT_TAIL
+  V_MAX=$DEFAULT_MAX_BYTES
+  V_TIMEOUT=$DEFAULT_WAIT
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tail | --max-bytes | --timeout)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        is_uint "$2" || die "$1 needs a non-negative integer, got '$2'"
+        if [ "$1" = --timeout ] && [ "$sub" != wait ]; then
+          die "--timeout applies to wait only"
+        fi
+        case "$1" in
+          --tail) V_TAIL=$2 ;;
+          --max-bytes) V_MAX=$2 ;;
+          --timeout) V_TIMEOUT=$2 ;;
+        esac
+        shift 2
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -*) die "$sub: unknown option $1" ;;
+      *)
+        [ -z "$V_NAME" ] || die "$sub: unexpected argument '$1'"
+        V_NAME=$1
+        shift
+        ;;
+    esac
+  done
+  [ -n "$V_NAME" ] || die "$sub needs a job name"
+  valid_name "$V_NAME" || die "invalid job name '$V_NAME'"
+}
+
+cmd_status() {
+  parse_view_opts status "$@"
+  load_job "$V_NAME" || die "no such job: $V_NAME (job-watch list shows jobs)"
+  print_status "$V_NAME" "$V_TAIL" "$V_MAX"
+  case "$STATE" in
+    running) return 0 ;;
+    exited)
+      if [ "$J_EXIT" = 0 ]; then return 0; fi
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_wait() {
+  local deadline now delay remaining
+  parse_view_opts wait "$@"
+  load_job "$V_NAME" || die "no such job: $V_NAME (job-watch list shows jobs)"
+  now=$(date +%s)
+  deadline=$((now + V_TIMEOUT))
+  delay=0.1
+  while [ "$STATE" = running ]; do
+    now=$(date +%s)
+    remaining=$((deadline - now))
+    if [ "$remaining" -le 0 ]; then
+      print_status "$V_NAME" "$V_TAIL" "$V_MAX"
+      printf '%s: %s still running after %ss\n' "$PROG" "$V_NAME" "$V_TIMEOUT" >&2
+      return 4
+    fi
+    if [ "$remaining" -lt 2 ] && [ "$delay" = 2 ]; then
+      delay=1
+    fi
+    sleep "$delay"
+    case "$delay" in
+      0.1) delay=0.2 ;;
+      0.2) delay=0.5 ;;
+      0.5) delay=1 ;;
+      *) delay=2 ;;
+    esac
+    load_job "$V_NAME" || die "job record $V_NAME vanished" 3
+  done
+  print_status "$V_NAME" "$V_TAIL" "$V_MAX"
+  if [ "$STATE" = exited ]; then
+    return "$J_EXIT"
+  fi
+  printf '%s: %s is lost: %s\n' "$PROG" "$V_NAME" "$NOTE" >&2
+  return 1
+}
+
+cmd_stop() {
+  local name="" dry=0 grace=$DEFAULT_GRACE target="" members i sig="TERM" cur_pgid
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --grace)
+        [ $# -ge 2 ] || die "--grace needs a value"
+        is_uint "$2" || die "--grace needs a non-negative integer, got '$2'"
+        grace=$2
+        shift 2
+        ;;
+      --dry-run)
+        dry=1
+        shift
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -*) die "stop: unknown option $1" ;;
+      *)
+        [ -z "$name" ] || die "stop: unexpected argument '$1'"
+        name=$1
+        shift
+        ;;
+    esac
+  done
+  [ -n "$name" ] || die "stop needs a job name"
+  valid_name "$name" || die "invalid job name '$name'"
+  load_job "$name" || die "no such job: $name (job-watch list shows jobs)"
+  if [ "$STATE" = running ]; then
+    cur_pgid=$(proc_pgid "$J_PID")
+    if [ "$cur_pgid" != "$J_PGID" ] || [ "$J_PGID" != "$J_PID" ]; then
+      die "job '$name' pid $J_PID is in group ${cur_pgid:-?}, recorded ${J_PGID:-?}; refusing to signal" 1
+    fi
+    target=$J_PGID
+  elif [ -n "$J_PGID" ] && [ "$J_PGID" = "$J_PID" ] && [ "$PID_REUSED" -eq 0 ] &&
+    [ "$(group_count "$J_PGID")" -gt 0 ]; then
+    # The PID is free or still the recorded runner. A group id stays reserved while the
+    # group has members, so the remaining members are processes the job left behind.
+    target=$J_PGID
+  fi
+  if [ -z "$target" ]; then
+    printf 'job: %s\nstate: %s\n' "$name" "$STATE"
+    if [ -n "$NOTE" ]; then
+      printf 'note: %s\n' "$NOTE"
+    fi
+    printf 'nothing to stop; no signal sent\n'
+    return 0
+  fi
+  members=$(group_count "$target")
+  if [ "$dry" -eq 1 ]; then
+    printf 'dry run: would send SIGTERM to process group %s (%s processes), then SIGKILL after %ss\n' \
+      "$target" "$members" "$grace"
+    return 0
+  fi
+  kill -TERM -- "-$target" 2>/dev/null || :
+  i=0
+  while [ "$(group_count "$target")" -gt 0 ] && [ "$i" -lt $((grace * 5)) ]; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+  if [ "$(group_count "$target")" -gt 0 ]; then
+    sig="KILL"
+    kill -KILL -- "-$target" 2>/dev/null || :
+    i=0
+    while [ "$(group_count "$target")" -gt 0 ] && [ "$i" -lt 10 ]; do
+      sleep 0.2
+      i=$((i + 1))
+    done
+  fi
+  write_atomic "$JDIR/stopped" "SIG$sig by job-watch stop at $(date +%s)"
+  if [ ! -f "$JDIR/exit" ]; then
+    if [ "$sig" = KILL ]; then
+      write_atomic "$JDIR/exit" 137
+    else
+      write_atomic "$JDIR/exit" 143
+    fi
+    [ -f "$JDIR/ended" ] || write_atomic "$JDIR/ended" "$(date +%s)"
+  fi
+  load_job "$name" || :
+  print_status "$name" 0 0
+  if [ "$(group_count "$target")" -gt 0 ]; then
+    printf '%s: process group %s survived SIGKILL\n' "$PROG" "$target" >&2
+    return 1
+  fi
+  return 0
+}
+
+cmd_list() {
+  local root d name code shown=0
+  [ $# -eq 0 ] || die "list takes no arguments"
+  root=$(jobs_root)
+  printf '%-24s %-8s %-5s %-9s %s\n' NAME STATE EXIT ELAPSED CMD
+  if [ -d "$root" ]; then
+    for d in "$root"/*/; do
+      [ -d "$d" ] || continue
+      name=$(basename "$d")
+      load_job "$name" || continue
+      code=${J_EXIT:--}
+      printf '%-24s %-8s %-5s %-9s %.60s\n' "$name" "$STATE" "$code" "$(fmt_elapsed "$(elapsed_s)")" "$J_CMD"
+      shown=$((shown + 1))
+    done
+  fi
+  if [ "$shown" -eq 0 ]; then
+    printf '%s: no jobs under %s\n' "$PROG" "$root" >&2
+  fi
+}
+
+quote_words() {
+  local out="" w q
+  for w in "$@"; do
+    printf -v q '%q' "$w"
+    out="${out}${out:+ }${q}"
+  done
+  printf '%s' "$out"
+}
+
+main() {
+  if [ $# -eq 0 ]; then
+    usage >&2
+    exit 2
+  fi
+  case "$1" in
+    -h | --help | help)
+      usage
+      exit 0
+      ;;
+  esac
+  need ps awk
+  local sub=$1
+  shift
+  case "$sub" in
+    start) cmd_start "$@" ;;
+    status) cmd_status "$@" ;;
+    wait) cmd_wait "$@" ;;
+    stop) cmd_stop "$@" ;;
+    list) cmd_list "$@" ;;
+    __run) cmd_run "$@" ;;
+    *) die "unknown subcommand '$sub' (start, status, wait, stop, list)" ;;
+  esac
+}
+
+main "$@"
