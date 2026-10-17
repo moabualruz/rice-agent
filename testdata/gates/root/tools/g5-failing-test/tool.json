@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "g5-failing-test",
+  "summary": "Use when a gate test needs a tool whose test fails.",
+  "intents": ["fixture g5-failing-test", "gate fixture g5-failing-test", "check fixture g5-failing-test"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "g5-failing-test",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "success", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "agent-dry ticket 04"}
+}

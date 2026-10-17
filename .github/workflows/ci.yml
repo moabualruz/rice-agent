@@ -28,3 +28,47 @@ jobs:
           trap 'rm -rf "$tools"' EXIT
           GOFLAGS= GOBIN="$tools" go install github.com/zricethezav/gitleaks/v8@v8.30.0
           "$tools/gitleaks" git --no-banner --redact
+
+  go:
+    runs-on: [self-hosted, linux, x64, generic]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v go >/dev/null 2>&1; then
+            echo "::error::go is not installed on this runner; the go job needs Go 1.27 or newer"
+            exit 1
+          fi
+          env -u GOFLAGS go version
+          missing=""
+          for cmd in shellcheck jq; do
+            command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing on this runner:$missing; agent-dry check needs them for gates G4 and G5"
+            exit 1
+          fi
+          shellcheck --version | sed -n 2p
+          jq --version
+
+      - name: Vet
+        shell: bash
+        run: env -u GOFLAGS go vet ./...
+
+      - name: Test
+        shell: bash
+        run: env -u GOFLAGS go test ./...
+
+      - name: Build
+        shell: bash
+        run: env -u GOFLAGS go build -o bin/agent-dry -ldflags "-X github.com/moabualruz/agent-dry/internal/commands.Version=$(git describe --tags --always --dirty)" ./cmd/agent-dry
+
+      - name: Tool admission gates
+        shell: bash
+        run: bin/agent-dry check --all

@@ -1,0 +1,17 @@
+{
+  "schema": "tool/v1",
+  "name": "g2-declared-distinct",
+  "summary": "Use when a gate test needs a declared distinct tool.",
+  "intents": ["fixture g2-declared-distinct", "gate fixture g2-declared-distinct", "check fixture g2-declared-distinct"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "g2-declared-distinct",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "success", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "distinct_from": [{"tool": "good-tool", "reason": "fixture kept apart from good-tool on purpose"}],
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "agent-dry ticket 04"}
+}

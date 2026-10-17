@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# g3-bad-help: gate fixture.
+set -euo pipefail
+case "${1:-}" in
+  -h | --help)
+    printf '%s\n' "g3-bad-help prints a word" "" "Exit codes: 0 success, 2 usage error."
+    exit 0
+    ;;
+  '')
+    printf '%s: missing word\n' "g3-bad-help" >&2
+    exit 2
+    ;;
+esac
+printf '%s\n' "$1"

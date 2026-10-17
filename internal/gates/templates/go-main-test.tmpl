@@ -1,0 +1,94 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Covers the motivating case, a varied input, bounded output, --help and every failure exit code.
+
+func fixture(t *testing.T, name, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func runArgs(args ...string) (int, string, string) {
+	var out, errOut bytes.Buffer
+	code := run(args, &out, &errOut)
+	return code, out.String(), errOut.String()
+}
+
+func TestHelp(t *testing.T) {
+	code, out, _ := runArgs("--help")
+	if code != 0 || !strings.HasPrefix(out, "Usage: {{.Name}} ") {
+		t.Fatalf("--help: exit %d, output %q", code, out)
+	}
+{{- if .DryRun}}
+	if !strings.Contains(out, "{{.DryRunFlag}}") {
+		t.Errorf("--help does not document {{.DryRunFlag}}")
+	}
+{{- end}}
+}
+
+func TestCounts(t *testing.T) {
+	three := fixture(t, "three.txt", "one\ntwo\nthree\n")
+	one := fixture(t, "one.txt", "only\n")
+	code, out, _ := runArgs(three)
+	if code != 0 || out != "3 "+three+"\n" {
+		t.Errorf("one file: exit %d, output %q", code, out)
+	}
+	code, out, _ = runArgs(one, three)
+	if code != 0 || out != "1 "+one+"\n3 "+three+"\n" {
+		t.Errorf("two files: exit %d, output %q", code, out)
+	}
+}
+
+func TestLimit(t *testing.T) {
+	one := fixture(t, "one.txt", "only\n")
+	code, out, errOut := runArgs("--limit", "1", one, one)
+	if code != 0 || strings.Count(out, "\n") != 1 || !strings.Contains(errOut, "raise --limit") {
+		t.Errorf("--limit 1: exit %d, output %q, stderr %q", code, out, errOut)
+	}
+}
+{{- if .DryRun}}
+
+func TestDryRun(t *testing.T) {
+	one := fixture(t, "one.txt", "only\n")
+	code, out, _ := runArgs("{{.DryRunFlag}}", one)
+	if code != 0 || !strings.Contains(out, "plan: would process "+one) {
+		t.Errorf("{{.DryRunFlag}}: exit %d, output %q", code, out)
+	}
+}
+{{- end}}
+
+func TestFailureCodes(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent.txt")
+	if code, out, _ := runArgs(missing); code != 1 || !strings.Contains(out, "missing "+missing) {
+		t.Errorf("missing file: exit %d, output %q", code, out)
+	}
+	usageCases := [][]string{
+		{"--no-such-option"},
+		{},
+		{"--limit", "0", missing},
+	}
+	for _, args := range usageCases {
+		if code, _, _ := runArgs(args...); code != 2 {
+			t.Errorf("%q: exit %d, want 2", args, code)
+		}
+	}
+	saved, savedLook := requires, lookPath
+	t.Cleanup(func() { requires, lookPath = saved, savedLook })
+	requires = []string{"required-command"}
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	if code, _, errOut := runArgs(missing); code != 3 || !strings.Contains(errOut, "required-command") {
+		t.Errorf("missing command: exit %d, stderr %q", code, errOut)
+	}
+}

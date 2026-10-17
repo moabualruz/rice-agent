@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "g4-shellcheck",
+  "summary": "Use when a gate test needs a script shellcheck rejects.",
+  "intents": ["fixture g4-shellcheck", "gate fixture g4-shellcheck", "check fixture g4-shellcheck"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "g4-shellcheck",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "success", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "agent-dry ticket 04"}
+}

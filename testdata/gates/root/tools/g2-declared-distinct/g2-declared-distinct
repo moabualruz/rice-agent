@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# g2-declared-distinct: gate fixture.
+set -euo pipefail
+case "${1:-}" in
+  -h | --help)
+    printf '%s\n' "Usage: g2-declared-distinct <word>" "" "Exit codes: 0 success, 2 usage error."
+    exit 0
+    ;;
+  '')
+    printf '%s: missing word\n' "g2-declared-distinct" >&2
+    exit 2
+    ;;
+esac
+printf '%s\n' "$1"

@@ -1,0 +1,16 @@
+{
+  "schema": "tool/v1",
+  "name": "g6-bad-origin",
+  "summary": "Use when a gate test needs an origin date that is not real.",
+  "intents": ["fixture g6-bad-origin", "gate fixture g6-bad-origin", "check fixture g6-bad-origin"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "g6-bad-origin",
+  "language": "bash",
+  "side_effects": "read",
+  "exit_codes": {"0": "success", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-13-40", "builder": "fixture", "task": "agent-dry ticket 04"}
+}

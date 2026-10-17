@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# g3-undocumented-dry-run: gate fixture.
+set -euo pipefail
+case "${1:-}" in
+  -h | --help)
+    printf '%s\n' "Usage: g3-undocumented-dry-run <word>" "" "Exit codes: 0 success, 2 usage error."
+    exit 0
+    ;;
+  '')
+    printf '%s: missing word\n' "g3-undocumented-dry-run" >&2
+    exit 2
+    ;;
+esac
+printf '%s\n' "$1"

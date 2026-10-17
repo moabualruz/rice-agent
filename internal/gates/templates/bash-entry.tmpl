@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# {{.Name}}: {{.Summary}}
+# Scaffolded by agent-dry new; follows docs/tool-contract.md (help, exit codes, bounded output).
+# Bash 3.2 compatible: no associative arrays, mapfile or ${var,,}.
+# Replace the placeholder action below with the real one and update the tests with it.
+set -euo pipefail
+
+PROG="{{.Name}}"
+# Commands this tool calls; keep in sync with "requires" in the manifest.
+REQUIRES="wc"
+LIMIT=50
+{{- if .DryRun}}
+DRY_RUN=0
+{{- end}}
+
+usage() {
+  cat <<'EOF'
+{{template "usage" .}}EOF
+}
+
+usage_error() {
+  printf '%s: %s\n' "$PROG" "$1" >&2
+  printf "Run '%s --help' for usage.\n" "$PROG" >&2
+  exit 2
+}
+
+# Options come before operands.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --limit)
+      [ "$#" -ge 2 ] || usage_error "--limit needs a value"
+      LIMIT="$2"
+      shift 2
+      ;;
+    --limit=*)
+      LIMIT="${1#--limit=}"
+      shift
+      ;;
+{{- if .DryRun}}
+    {{.DryRunFlag}})
+      DRY_RUN=1
+      shift
+      ;;
+{{- end}}
+    --)
+      shift
+      break
+      ;;
+    -*) usage_error "unknown option: $1" ;;
+    *) break ;;
+  esac
+done
+
+case "$LIMIT" in
+  '' | *[!0-9]*) usage_error "--limit must be a positive integer" ;;
+esac
+[ "$LIMIT" -gt 0 ] || usage_error "--limit must be a positive integer"
+[ "$#" -gt 0 ] || usage_error "no file given"
+
+for cmd in $REQUIRES; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf '%s: missing required command: %s\n' "$PROG" "$cmd" >&2
+    exit 3
+  fi
+done
+
+status=0
+shown=0
+for item in "$@"; do
+  if [ ! -f "$item" ]; then
+    line="missing $item"
+    status=1
+{{- if .DryRun}}
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    line="plan: would process $item"
+{{- end}}
+  else
+    line="$(($(wc -l <"$item"))) $item"
+  fi
+  shown=$((shown + 1))
+  if [ "$shown" -le "$LIMIT" ]; then
+    printf '%s\n' "$line"
+  fi
+done
+if [ "$shown" -gt "$LIMIT" ]; then
+  printf '%s: %s more result lines not shown; raise --limit\n' "$PROG" "$((shown - LIMIT))" >&2
+fi
+exit "$status"

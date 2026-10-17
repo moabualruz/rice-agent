@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Tests for {{.Name}}. Run: {{.TestCmd}}
+# Covers the motivating case, a varied input, bounded output, --help and every failure exit code.
+# Uses fixtures in a temporary directory and removes them on exit.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+entry="$here/{{.Name}}"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/{{.Name}}-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+fails=0
+
+pass() { printf 'ok   %s\n' "$1"; }
+fail() {
+  printf 'FAIL %s\n' "$1"
+  fails=$((fails + 1))
+}
+
+# expect_exit <description> <wanted exit code> <command...>; output lands in $tmp/out and $tmp/err.
+expect_exit() {
+  local desc="$1" want="$2" got=0
+  shift 2
+  "$@" >"$tmp/out" 2>"$tmp/err" || got=$?
+  if [ "$got" -eq "$want" ]; then
+    pass "$desc"
+  else
+    fail "$desc: exit $got, want $want"
+    sed -n '1,5s/^/     /p' "$tmp/err"
+  fi
+}
+
+# expect_out <description> <fixed string expected in $tmp/out>
+expect_out() {
+  if grep -F -q -e "$2" "$tmp/out"; then pass "$1"; else fail "$1: output lacks '$2'"; fi
+}
+
+printf 'one\ntwo\nthree\n' >"$tmp/three.txt"
+printf 'only\n' >"$tmp/one.txt"
+mkdir "$tmp/empty-path"
+
+expect_exit "--help exits 0" 0 "$entry" --help
+first=""
+IFS= read -r first <"$tmp/out" || true
+case "$first" in
+  "Usage: {{.Name}} "*) pass "--help starts with Usage" ;;
+  *) fail "--help starts with Usage: got '$first'" ;;
+esac
+{{- if .DryRun}}
+expect_out "--help documents {{.DryRunFlag}}" "{{.DryRunFlag}}"
+{{- end}}
+
+expect_exit "motivating case: one file" 0 "$entry" "$tmp/three.txt"
+expect_out "counts three lines" "3 $tmp/three.txt"
+
+expect_exit "varied input: two files" 0 "$entry" "$tmp/one.txt" "$tmp/three.txt"
+expect_out "counts the first file" "1 $tmp/one.txt"
+expect_out "counts the second file" "3 $tmp/three.txt"
+
+expect_exit "bounded output" 0 "$entry" --limit 1 "$tmp/one.txt" "$tmp/three.txt"
+if grep -F -q -e "$tmp/three.txt" "$tmp/out"; then fail "--limit 1 printed a second line"; else pass "--limit 1 prints one line"; fi
+if grep -F -q -e "raise --limit" "$tmp/err"; then pass "limit notice on stderr"; else fail "no limit notice on stderr"; fi
+{{- if .DryRun}}
+
+expect_exit "{{.DryRunFlag}} exits 0" 0 "$entry" {{.DryRunFlag}} "$tmp/one.txt"
+expect_out "{{.DryRunFlag}} prints the plan" "plan: would process $tmp/one.txt"
+{{- end}}
+
+expect_exit "missing file exits 1" 1 "$entry" "$tmp/absent.txt"
+expect_out "reports the missing file" "missing $tmp/absent.txt"
+
+expect_exit "unknown option exits 2" 2 "$entry" --no-such-option
+expect_exit "no operand exits 2" 2 "$entry"
+expect_exit "bad --limit exits 2" 2 "$entry" --limit zero "$tmp/one.txt"
+
+expect_exit "missing required command exits 3" 3 env PATH="$tmp/empty-path" "$BASH" "$entry" "$tmp/one.txt"
+
+if [ "$fails" -ne 0 ]; then
+  printf '%s: %s test(s) failed\n' "{{.Name}}" "$fails"
+  exit 1
+fi
+printf '%s: all tests passed\n' "{{.Name}}"

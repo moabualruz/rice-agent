@@ -1,0 +1,17 @@
+{
+  "schema": "tool/v1",
+  "name": "g3-undocumented-dry-run",
+  "summary": "Use when a gate test needs a dry run flag missing from help.",
+  "intents": ["fixture g3-undocumented-dry-run", "gate fixture g3-undocumented-dry-run", "check fixture g3-undocumented-dry-run"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "g3-undocumented-dry-run",
+  "language": "bash",
+  "side_effects": "write-local",
+  "dry_run": "--dry-run",
+  "exit_codes": {"0": "success", "2": "usage error"},
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {"date": "2026-10-17", "builder": "fixture", "task": "agent-dry ticket 04"}
+}

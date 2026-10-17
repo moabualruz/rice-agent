@@ -1,0 +1,111 @@
+// Command {{.Name}}: {{.Summary}}
+//
+// Scaffolded by agent-dry new; follows docs/tool-contract.md (help, exit codes, bounded output).
+// Replace the placeholder action in process with the real one and update main_test.go with it.
+package main
+
+import (
+	"bufio"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+)
+
+const prog = "{{.Name}}"
+
+const usageText = {{.GoUsage}}
+
+// requires lists the external commands this tool calls; keep in sync with the manifest.
+var requires = []string{}
+
+// lookPath is replaced in tests.
+var lookPath = exec.LookPath
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func usageError(stderr io.Writer, msg string) int {
+	fmt.Fprintf(stderr, "%s: %s\nRun '%s --help' for usage.\n", prog, msg, prog)
+	return 2
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(prog, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	limit := fs.Int("limit", 50, "")
+	help := fs.Bool("help", false, "")
+	fs.BoolVar(help, "h", false, "")
+{{- if .DryRun}}
+	dryRun := fs.Bool("{{.DryRunName}}", false, "")
+{{- end}}
+	if err := fs.Parse(args); err != nil {
+		return usageError(stderr, err.Error())
+	}
+	if *help {
+		fmt.Fprint(stdout, usageText)
+		return 0
+	}
+	if *limit <= 0 {
+		return usageError(stderr, "--limit must be a positive integer")
+	}
+	if fs.NArg() == 0 {
+		return usageError(stderr, "no file given")
+	}
+	for _, cmd := range requires {
+		if _, err := lookPath(cmd); err != nil {
+			fmt.Fprintf(stderr, "%s: missing required command: %s\n", prog, cmd)
+			return 3
+		}
+	}
+
+	status, shown := 0, 0
+	for _, item := range fs.Args() {
+		var line string
+		n, err := countLines(item)
+		switch {
+		case err != nil:
+			line = "missing " + item
+			status = 1
+{{- if .DryRun}}
+		case *dryRun:
+			line = "plan: would process " + item
+{{- end}}
+		default:
+			line = fmt.Sprintf("%d %s", n, item)
+		}
+		shown++
+		if shown <= *limit {
+			fmt.Fprintln(stdout, line)
+		}
+	}
+	if shown > *limit {
+		fmt.Fprintf(stderr, "%s: %d more result lines not shown; raise --limit\n", prog, shown-*limit)
+	}
+	return status
+}
+
+// countLines is the placeholder action.
+func countLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if info.IsDir() {
+		return 0, errors.New("is a directory")
+	}
+	n := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		n++
+	}
+	return n, sc.Err()
+}

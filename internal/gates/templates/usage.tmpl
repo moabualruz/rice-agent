@@ -1,0 +1,21 @@
+{{define "usage"}}Usage: {{.Name}} [options] <file>...
+
+{{.Summary}}
+Placeholder action: print the line count of each file.
+
+Options:
+  --limit N    print at most N result lines (default 50)
+{{- if .DryRun}}
+  {{.DryRunFlag}}    print the plan and change nothing
+{{- end}}
+  -h, --help   show this help and exit
+
+Exit codes:
+  0  success
+  1  negative result (a file is missing)
+  2  usage error
+  3  missing required command
+
+Example:
+  {{.Name}} README.md
+{{end}}
