@@ -1,0 +1,728 @@
+#!/usr/bin/env bash
+# oss-evidence: one evidence record per open-source candidate from GitHub (gh), the OpenSSF
+# Scorecard API, deps.dev and OSV. A field that could not be read is recorded as missing with
+# the reason, never as zero. Run `oss-evidence --help` for usage.
+# Bash 3.2 compatible: no associative arrays, mapfile or ${var,,}. Requires gh, curl and jq.
+set -euo pipefail
+
+PROG="oss-evidence"
+REQUIRES="gh curl jq"
+MAX_CANDIDATES=20   # operands accepted per run (bounded output and API use)
+PARALLEL=4          # candidates gathered at the same time
+STALE_DAYS=365      # stale and release-stale threshold (12 months)
+MAX_BYTES=20000000  # cap per HTTP response body
+REASON_MAX=160      # characters kept from an upstream error message
+DEFAULT_LICENSES="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,0BSD,Unlicense,CC0-1.0,Zlib,BSL-1.0"
+UA="oss-evidence (agent-dry)"
+
+# Public, keyless API roots (the same on every machine).
+GITHUB_API="https://api.github.com"
+SCORECARD_API="https://api.scorecard.dev"
+DEPSDEV_API="https://api.deps.dev"
+OSV_API="https://api.osv.dev"
+
+usage() {
+  cat <<'EOF'
+Usage: oss-evidence <owner/repo>... [--package <ecosystem>:<name>] [options]
+       oss-evidence --rubric
+
+Gather one evidence record per open-source candidate: GitHub metadata through gh (language,
+stars, forks, last push, archived, license SPDX id, open issues including pull requests,
+default branch), the latest GitHub release, the OpenSSF Scorecard score, date and Maintained
+check, deps.dev project data and, with --package, the package's version count, latest version,
+license, deprecation, deps.dev dependent count and the OSV advisories affecting that version.
+Every field holds a value or is marked missing with the reason (HTTP 404, rate limited, not
+scanned, timeout); missing evidence is never reported as zero. The tool gathers evidence only;
+the verdict (adopt, trial, assess, hold, or build) is yours: see --rubric.
+
+Candidates: owner/repo, github.com/owner/repo or https://github.com/owner/repo; at most 20.
+
+Options:
+  --package ECO:NAME  package evidence for the repository operand before it (or for the first
+                      one when it comes before every operand); ECO is npm, go, cargo, maven
+                      (NAME group:artifact), pypi, nuget or rubygems; e.g. npm:@ast-grep/cli
+  --json              JSON array, one evidence record per line: candidate, package,
+                      retrieved_at, flags, and evidence.<field> = {value, source} or
+                      {value: null, missing: <reason>, source}
+  --licenses LIST     comma-separated SPDX allowlist for the license flags; default: config key
+                      oss_evidence.license_allowlist, else common permissive licenses
+                      (--rubric prints the effective list)
+  --timeout SECS      per-request timeout, 1 to 120 (default 20)
+  --rubric            print the default verdict rubric and ring vocabulary, then exit
+  -h, --help          show this help
+
+Text output: one row per candidate (repository, language, stars, last push, latest release,
+Scorecard score and date, Maintained check, license, flags); "?" marks a missing value and an
+indented line names each missing field and why. Flags: archived, moved (renamed or transferred;
+later calls use the new name), stale (no push in 12 months), release-stale, no-license,
+license-unknown, license-not-allowlisted, python (primary language), package-deprecated,
+package-unlinked (deps.dev names another source repository), advisories, critical-advisories.
+
+Environment: AGENT_DRY_CONFIG (config path, default ~/.config/agent-dry/config.json);
+OSS_EVIDENCE_NOW (fixed UTC time such as 2026-10-17T12:00:00Z, for reproducible output).
+GitHub calls use the existing gh login; the other APIs are keyless. No token is read or printed.
+
+Exit codes:
+  0  every candidate repository was found (individual fields may still be missing)
+  1  at least one candidate repository does not exist on GitHub (HTTP 404); others still print
+  2  usage error
+  3  environment failure: gh, curl or jq missing, config unusable, gh not authenticated, or
+     GitHub metadata unavailable for a candidate (rate limit, timeout, network); records print
+
+Example:
+  oss-evidence ast-grep/ast-grep --package npm:@ast-grep/cli kucherenko/jscpd --json | jq '.[].flags'
+EOF
+}
+
+note() { printf '%s: %s\n' "${PROG}" "$*" >&2; }
+die() {
+  local code="$1"
+  shift
+  note "$*"
+  exit "${code}"
+}
+usage_err() {
+  note "$*"
+  printf 'Run %s --help for usage.\n' "${PROG}" >&2
+  exit 2
+}
+
+# norm_slug <input>: print owner/repo from owner/repo, github.com/owner/repo or a GitHub URL.
+norm_slug() {
+  local s="$1" url=0 owner repo
+  case "${s}" in
+    https://* | http://*)
+      s="${s#*://}"
+      url=1
+      ;;
+  esac
+  s="${s#www.}"
+  case "${s}" in
+    github.com/*)
+      s="${s#github.com/}"
+      url=1
+      ;;
+  esac
+  owner="${s%%/*}"
+  [ "${owner}" != "${s}" ] || return 1
+  repo="${s#*/}"
+  if [ "${url}" = 1 ]; then
+    repo="${repo%%/*}"
+    repo="${repo%.git}"
+  fi
+  case "${owner}" in '' | -* | *[!A-Za-z0-9-]*) return 1 ;; esac
+  case "${repo}" in '' | . | .. | *[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s/%s' "${owner}" "${repo}"
+}
+
+# pkg_parse <ecosystem:name>: set P_ECO, P_SYS (deps.dev system), P_OSV (OSV ecosystem), P_NAME.
+pkg_parse() {
+  local spec="$1" eco
+  case "${spec}" in *:?*) ;; *) return 1 ;; esac
+  eco=$(printf '%s' "${spec%%:*}" | tr '[:upper:]' '[:lower:]')
+  P_NAME="${spec#*:}"
+  case "${P_NAME}" in *[[:space:]]* | *[[:cntrl:]]*) return 1 ;; esac
+  case "${eco}" in
+    npm) P_SYS=NPM P_OSV=npm ;;
+    go | golang) eco=go P_SYS=GO P_OSV=Go ;;
+    cargo | crates | crates.io) eco=cargo P_SYS=CARGO P_OSV=crates.io ;;
+    maven) P_SYS=MAVEN P_OSV=Maven ;;
+    pypi) P_SYS=PYPI P_OSV=PyPI ;;
+    nuget) P_SYS=NUGET P_OSV=NuGet ;;
+    rubygems | gem) eco=rubygems P_SYS=RUBYGEMS P_OSV=RubyGems ;;
+    *) return 1 ;;
+  esac
+  P_ECO="${eco}"
+}
+
+# ---------- argument parsing (builtins only, before any dependency check) ----------
+
+JSON=0
+RUBRIC=0
+TIMEOUT=20
+LICENSES_ARG=""
+LICENSES_SET=0
+NREPO=0
+EARLY_PKG=""
+REPOS=()
+SPECS=()
+
+add_repo() {
+  local slug
+  slug=$(norm_slug "$1") || usage_err "not a GitHub repository (want owner/repo): $1"
+  [ "${NREPO}" -lt "${MAX_CANDIDATES}" ] || usage_err "at most ${MAX_CANDIDATES} candidates per run"
+  REPOS[NREPO]="${slug}"
+  SPECS[NREPO]=""
+  NREPO=$((NREPO + 1))
+}
+
+add_package() {
+  local last
+  pkg_parse "$1" || usage_err "--package wants <ecosystem>:<name> (npm, go, cargo, maven, pypi, nuget, rubygems): $1"
+  if [ "${NREPO}" -eq 0 ]; then
+    [ -z "${EARLY_PKG}" ] || usage_err "two --package options before the first repository"
+    EARLY_PKG="${P_ECO}:${P_NAME}"
+    return 0
+  fi
+  last=$((NREPO - 1))
+  [ -z "${SPECS[last]}" ] || usage_err "a second --package for ${REPOS[last]}"
+  SPECS[last]="${P_ECO}:${P_NAME}"
+}
+
+while [ "$#" -gt 0 ]; do
+  a="$1"
+  shift
+  case "${a}" in
+    --*=*)
+      name="${a%%=*}"
+      val="${a#*=}"
+      has_val=1
+      ;;
+    *)
+      name="${a}"
+      val=""
+      has_val=0
+      ;;
+  esac
+  case "${name}" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --json | --rubric)
+      [ "${has_val}" = 0 ] || usage_err "${name} takes no value"
+      if [ "${name}" = --json ]; then JSON=1; else RUBRIC=1; fi
+      ;;
+    --package | --licenses | --timeout)
+      if [ "${has_val}" = 0 ]; then
+        [ "$#" -gt 0 ] || usage_err "${name} needs a value"
+        val="$1"
+        shift
+      fi
+      case "${name}" in
+        --package) add_package "${val}" ;;
+        --licenses)
+          LICENSES_ARG="${val}"
+          LICENSES_SET=1
+          ;;
+        --timeout) TIMEOUT="${val}" ;;
+      esac
+      ;;
+    --)
+      while [ "$#" -gt 0 ]; do
+        add_repo "$1"
+        shift
+      done
+      ;;
+    -*) usage_err "unknown option: ${a}" ;;
+    *) add_repo "${a}" ;;
+  esac
+done
+
+if [ -n "${EARLY_PKG}" ]; then
+  [ "${NREPO}" -gt 0 ] || usage_err "--package needs a repository operand"
+  [ -z "${SPECS[0]}" ] || usage_err "a second --package for ${REPOS[0]}"
+  SPECS[0]="${EARLY_PKG}"
+fi
+if [ "${RUBRIC}" = 1 ]; then
+  [ "${NREPO}" -eq 0 ] || usage_err "--rubric takes no candidates"
+else
+  [ "${NREPO}" -gt 0 ] || usage_err "no candidate given (owner/repo)"
+fi
+case "${TIMEOUT}" in '' | *[!0-9]* | 0*) usage_err "--timeout wants whole seconds from 1 to 120" ;; esac
+[ "${#TIMEOUT}" -le 3 ] && [ "${TIMEOUT}" -le 120 ] || usage_err "--timeout wants whole seconds from 1 to 120"
+if [ "${LICENSES_SET}" = 1 ]; then
+  case ",${LICENSES_ARG}," in
+    *,,* | *[!A-Za-z0-9.+,-]*) usage_err "--licenses wants comma-separated SPDX ids, such as MIT,Apache-2.0" ;;
+  esac
+fi
+
+# ---------- environment ----------
+
+command -v jq >/dev/null 2>&1 || die 3 "missing required command: jq"
+CONFIG="${AGENT_DRY_CONFIG:-${HOME:-}/.config/agent-dry/config.json}"
+
+# cfg_licenses: print oss_evidence.license_allowlist joined by commas; empty when absent.
+cfg_licenses() {
+  [ -e "${CONFIG}" ] || return 0
+  [ -r "${CONFIG}" ] || die 3 "config file not readable: ${CONFIG}"
+  jq -r '
+    if type != "object" then error("config is not an object") else . end
+    | (.oss_evidence // {})
+    | if type != "object" then error("oss_evidence is not an object") else . end
+    | (.license_allowlist // empty)
+    | if type == "array" and length > 0 and all(.[]; type == "string") then join(",")
+      else error("license_allowlist is not a non-empty array of strings") end' "${CONFIG}" 2>/dev/null \
+    || die 3 "config file unusable for oss_evidence.license_allowlist: ${CONFIG}"
+}
+
+if [ "${LICENSES_SET}" = 1 ]; then
+  LICENSE_LIST="${LICENSES_ARG}"
+  LICENSE_SOURCE="--licenses"
+else
+  LICENSE_LIST=$(cfg_licenses) || exit $?
+  LICENSE_SOURCE="config oss_evidence.license_allowlist"
+  if [ -z "${LICENSE_LIST}" ]; then
+    LICENSE_LIST="${DEFAULT_LICENSES}"
+    LICENSE_SOURCE="default"
+  else
+    case ",${LICENSE_LIST}," in
+      *,,* | *[!A-Za-z0-9.+,-]*) die 3 "config oss_evidence.license_allowlist holds a value that is not an SPDX id: ${CONFIG}" ;;
+    esac
+  fi
+fi
+LICENSES_JSON=$(jq -cn --arg s "${LICENSE_LIST}" '$s | split(",")')
+
+rubric() {
+  cat <<'EOF'
+oss-evidence verdict rubric: guidance only. oss-evidence gathers evidence; you write the verdict.
+
+Vetoes first. One veto rules a candidate out, whatever its signals:
+  archived       the repository is archived (flag archived)
+  license        no license, an undetected license, or one outside the allowlist (flags
+                 no-license, license-unknown, license-not-allowlisted)
+  runtime        a runtime the owner policy excludes, such as a Python runtime for a non-Python
+                 project (flag python marks a Python primary language; confirm whether the
+                 runtime is really needed, since a prebuilt binary may avoid it)
+  advisories     known critical advisories affecting the latest version, so no released fix
+                 (flag critical-advisories; needs --package; osv_unrated counts advisories with
+                 no severity label, which are unknown, not harmless)
+  hosted only    no local or self-hosted mode when local-first is required (not detected;
+                 read the documentation)
+
+Signals next, only for candidates that no veto removed. Missing evidence is unknown: say so
+and never count it as zero.
+  maintenance    last push and latest release within 12 months (flags stale, release-stale);
+                 Scorecard Maintained check (10 means commit and issue activity in the last 90
+                 days)
+  adoption       stars and forks (popularity proxies); deps.dev dependents of the package
+                 (needs --package; indicative, not exact); number of published versions
+  scorecard      OpenSSF Scorecard score (0 to 10) and its date; a repository outside the weekly
+                 scan is "not scanned", which is missing evidence, not a low score
+  fit            the owner's constraints (platforms, language, local-first) and the cost of
+                 integrating the candidate compared with building
+
+Rings (ThoughtWorks Technology Radar vocabulary) for each candidate verdict:
+  adopt          strong evidence and no veto; the default choice for this capability
+  trial          ready for use where the risk is bounded; not yet completely proven here
+  assess         worth exploring (a spike or a sandbox test) before any commitment
+  hold           do not start new use; proceed with caution (the Radar now names this ring
+                 Caution)
+Capability verdict: adopt <candidate>, extend <candidate>, or build when every candidate is
+vetoed or fails a representative local task. Cite the evidence records (retrieved_at and the
+source URLs) and list the missing evidence.
+EOF
+  printf '\nLicense allowlist (%s): %s\n' "${LICENSE_SOURCE}" "$(printf '%s' "${LICENSE_LIST}" | sed 's/,/, /g')"
+}
+
+if [ "${RUBRIC}" = 1 ]; then
+  rubric
+  exit 0
+fi
+
+for c in ${REQUIRES}; do
+  command -v "${c}" >/dev/null 2>&1 || die 3 "missing required command: ${c}"
+done
+
+if [ -n "${OSS_EVIDENCE_NOW:-}" ]; then
+  case "${OSS_EVIDENCE_NOW}" in
+    [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-6][0-9]Z) ;;
+    *) die 3 "OSS_EVIDENCE_NOW must be a UTC time such as 2026-10-17T12:00:00Z" ;;
+  esac
+fi
+now_iso() {
+  if [ -n "${OSS_EVIDENCE_NOW:-}" ]; then
+    printf '%s\n' "${OSS_EVIDENCE_NOW}"
+  else
+    date -u +%Y-%m-%dT%H:%M:%SZ
+  fi
+}
+CUTOFF=$(jq -rn --arg n "$(now_iso)" --argjson d "${STALE_DAYS}" '$n | fromdateiso8601 - ($d * 86400) | todate | .[0:10]') \
+  || die 3 "cannot compute the staleness cutoff with jq"
+CONNECT=10
+[ "${TIMEOUT}" -ge "${CONNECT}" ] || CONNECT="${TIMEOUT}"
+
+# gh must not prompt, page or print update notices into the captured output.
+export GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GH_SPINNER_DISABLED=1 NO_COLOR=1
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/oss-evidence.XXXXXX") || die 3 "cannot create a temporary directory"
+trap 'rm -rf "${WORK}"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# ---------- fetching ----------
+
+# clean: first line of stdin, tokens redacted, truncated.
+clean() {
+  tr -d '\r' | sed -n '1p' \
+    | sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/[redacted]/g' \
+      -e 's/([Bb]earer|[Tt]oken) [A-Za-z0-9._~+\/-]{16,}/\1 [redacted]/g' \
+    | cut -c "1-${REASON_MAX}"
+}
+
+urienc() { jq -rn --arg s "$1" '$s | @uri'; }
+
+# result_fail <file> <kind> <reason>: record a failed source.
+result_fail() {
+  jq -cn --arg k "$2" --arg r "$3" '{ok: false, kind: $k, reason: $r}' >"$1"
+}
+
+# result_ok <body file> <result file>: record a successful source; 1 when the body is not JSON.
+result_ok() {
+  [ -s "$1" ] || return 1
+  jq -c '{ok: true, data: .}' "$1" >"$2.tmp" 2>/dev/null || return 1
+  [ -s "$2.tmp" ] || return 1
+  mv "$2.tmp" "$2"
+}
+
+result_kind() { jq -r 'if .ok then "ok" else (.kind // "error") end' "$1" 2>/dev/null || echo error; }
+
+# bounded <secs> <out> <err> <command...>: run with a deadline; 124 when it was stopped.
+# gh has no request timeout of its own, so a watcher stops it; Bash 3.2 has no `timeout`.
+bounded() {
+  local secs="$1" out="$2" err="$3" pid watcher rc=0
+  shift 3
+  "$@" >"${out}" 2>"${err}" </dev/null &
+  pid=$!
+  (
+    n=0
+    while [ "${n}" -lt "${secs}" ]; do
+      sleep 1
+      kill -0 "${pid}" 2>/dev/null || exit 0
+      n=$((n + 1))
+    done
+    : >"${out}.timedout"
+    kill -TERM "${pid}" 2>/dev/null
+  ) >/dev/null 2>&1 </dev/null &
+  watcher=$!
+  wait "${pid}" || rc=$?
+  kill "${watcher}" 2>/dev/null || true
+  if [ "${rc}" -ne 0 ] && [ -e "${out}.timedout" ]; then return 124; fi
+  return "${rc}"
+}
+
+# fetch_gh <result> <404 reason> <api path> <gh --jq filter>
+fetch_gh() {
+  local dest="$1" nf="$2" path="$3" filter="$4" rc=0 code msg err
+  bounded "${TIMEOUT}" "${dest}.out" "${dest}.err" gh api "${path}" --jq "${filter}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    result_ok "${dest}.out" "${dest}" || result_fail "${dest}" invalid "invalid or empty JSON from gh api"
+    return 0
+  fi
+  if [ "${rc}" -eq 124 ]; then
+    result_fail "${dest}" timeout "timeout after ${TIMEOUT}s (api.github.com)"
+    return 0
+  fi
+  # gh prints the error body on stdout before it fails: read it for the message only, never as data.
+  msg=$(jq -r '.message? // empty' "${dest}.out" 2>/dev/null | clean) || msg=""
+  err=$(clean <"${dest}.err") || err=""
+  code=$(sed -n 's/.*(HTTP \([0-9][0-9][0-9]\)).*/\1/p' "${dest}.err" | sed -n '1p') || code=""
+  if grep -qi 'rate limit' "${dest}.err" "${dest}.out" 2>/dev/null; then
+    result_fail "${dest}" ratelimit "rate limited (HTTP ${code:-403}, api.github.com)"
+  elif [ "${code}" = 404 ]; then
+    result_fail "${dest}" notfound "${nf} (HTTP 404)"
+  elif [ "${code}" = 401 ] || grep -q 'gh auth login' "${dest}.err" 2>/dev/null; then
+    result_fail "${dest}" auth "gh not authenticated (run gh auth login)"
+  elif [ -n "${code}" ]; then
+    result_fail "${dest}" http "GitHub HTTP ${code}: ${msg:-${err}}"
+  else
+    result_fail "${dest}" network "gh api failed (exit ${rc}): ${err:-no message}"
+  fi
+}
+
+# fetch_http <result> <404 reason> <url> [JSON body to POST]
+fetch_http() {
+  local dest="$1" nf="$2" url="$3" body="${4:-}" rc=0 code="" host
+  host="${url#https://}"
+  host="${host%%/*}"
+  if [ -n "${body}" ]; then
+    code=$(printf '%s' "${body}" | curl -sS --proto '=https' -m "${TIMEOUT}" --connect-timeout "${CONNECT}" \
+      --max-filesize "${MAX_BYTES}" -A "${UA}" -H 'Accept: application/json' \
+      -H 'Content-Type: application/json' --data-binary @- \
+      -o "${dest}.out" -w '%{http_code}' "${url}" 2>"${dest}.err") || rc=$?
+  else
+    code=$(curl -sS --proto '=https' -m "${TIMEOUT}" --connect-timeout "${CONNECT}" \
+      --max-filesize "${MAX_BYTES}" -A "${UA}" -H 'Accept: application/json' \
+      -o "${dest}.out" -w '%{http_code}' "${url}" 2>"${dest}.err" </dev/null) || rc=$?
+  fi
+  case "${rc}" in
+    0) ;;
+    28)
+      result_fail "${dest}" timeout "timeout after ${TIMEOUT}s (${host})"
+      return 0
+      ;;
+    63)
+      result_fail "${dest}" toolarge "response over ${MAX_BYTES} bytes (${host})"
+      return 0
+      ;;
+    *)
+      result_fail "${dest}" network "network error: curl exit ${rc} (${host})"
+      return 0
+      ;;
+  esac
+  case "${code}" in
+    200)
+      if ! result_ok "${dest}.out" "${dest}"; then
+        if [ -s "${dest}.out" ]; then
+          result_fail "${dest}" invalid "invalid JSON (HTTP 200, ${host})"
+        else
+          result_fail "${dest}" invalid "empty response (HTTP 200, ${host})"
+        fi
+      fi
+      ;;
+    404) result_fail "${dest}" notfound "${nf} (HTTP 404)" ;;
+    429) result_fail "${dest}" ratelimit "rate limited (HTTP 429, ${host})" ;;
+    *)
+      if grep -qi 'rate limit' "${dest}.out" 2>/dev/null; then
+        result_fail "${dest}" ratelimit "rate limited (HTTP ${code}, ${host})"
+      else
+        result_fail "${dest}" http "HTTP ${code} (${host})"
+      fi
+      ;;
+  esac
+}
+
+REPO_FILTER='{full_name, language, stargazers_count, forks_count, open_issues_count, pushed_at, archived, default_branch, has_license: (.license != null), license_spdx: .license.spdx_id}'
+REL_FILTER='{tag_name, published_at, created_at}'
+JQ_LATEST='def latest: ([(.versions // [])[] | select(.isDefault == true)][0] // ((.versions // []) | if length > 0 then max_by(.publishedAt // "") else null end));'
+
+# ASSEMBLE builds one evidence record from the per-source result files.
+# shellcheck disable=SC2016  # a jq program: its $names are jq variables, not shell expansions
+ASSEMBLE="${JQ_LATEST}"'
+def src($u): if $u == "" then null else $u end;
+def val($v; $u): {value: $v, source: src($u)};
+def miss($why; $u): {value: null, missing: $why, source: src($u)};
+def pick($r; f; $u):
+  if $r.ok then ((try ($r.data | f) catch null) as $v
+    | if $v == null then miss("absent from the response"; $u) else val($v; $u) end)
+  else miss($r.reason; $u) end;
+def ev($e; $k): $e[$k].value;
+def lower: ascii_downcase;
+$repo[0] as $R | $rel[0] as $L | $sc[0] as $S | $dd[0] as $D
+| $pkg[0] as $P | $ver[0] as $V | $osv[0] as $O | $dep[0] as $N
+| (if $S.ok then [($S.data.checks // [])[] | select(.name == "Maintained")][0] else null end) as $m
+| {
+    candidate: $cand,
+    package: (if $spec == "" then null else $spec end),
+    retrieved_at: $retrieved,
+    flags: [],
+    evidence: {
+      full_name: pick($R; .full_name; $u_repo),
+      language: pick($R; .language; $u_repo),
+      stars: pick($R; .stargazers_count; $u_repo),
+      forks: pick($R; .forks_count; $u_repo),
+      open_issues: pick($R; .open_issues_count; $u_repo),
+      pushed_at: pick($R; .pushed_at; $u_repo),
+      archived: pick($R; .archived; $u_repo),
+      license: pick($R; (if .has_license then (.license_spdx // "NOASSERTION") else "NONE" end); $u_repo),
+      default_branch: pick($R; .default_branch; $u_repo),
+      release_tag: pick($L; .tag_name; $u_rel),
+      release_date: pick($L; (.published_at // .created_at); $u_rel),
+      scorecard: pick($S; .score; $u_sc),
+      scorecard_date: pick($S; .date; $u_sc),
+      maintained: (if ($S.ok | not) then miss($S.reason; $u_sc)
+        elif $m == null then miss("Maintained check absent from the Scorecard result"; $u_sc)
+        elif (($m.score // -1) < 0) then miss("inconclusive (Scorecard -1): " + (($m.reason // "") | tostring | .[0:120]); $u_sc)
+        else val($m.score; $u_sc) end),
+      depsdev_project: pick($D; .projectKey.id; $u_dd),
+      oss_fuzz: pick($D; (.ossFuzz != null); $u_dd),
+      package_versions: pick($P; ((.versions // []) | length); $u_pkg),
+      package_latest: pick($P; latest.versionKey.version; $u_pkg),
+      package_published: pick($V; .publishedAt; $u_ver),
+      package_license: pick($V; ((.licenses // []) | if length == 0 then "NONE" else join(", ") end); $u_ver),
+      package_deprecated: pick($V; .isDeprecated; $u_ver),
+      dependents: pick($N; .dependentCount; $u_dep),
+      osv_advisories: pick($O; ((.vulns // []) | length); $u_osv),
+      osv_critical: pick($O; ([(.vulns // [])[] | select(((.database_specific.severity // "") | tostring | ascii_upcase) == "CRITICAL")] | length); $u_osv),
+      osv_unrated: pick($O; ([(.vulns // [])[] | select((.database_specific.severity // "") == "")] | length); $u_osv),
+      osv_ids: pick($O; ([(.vulns // [])[].id] | .[0:10]); $u_osv)
+    }
+  }
+| .evidence as $e
+| .flags = [
+    (if ev($e; "archived") == true then "archived" else empty end),
+    (ev($e; "full_name") as $f | if $f != null and (($f | lower) != ($cand | lower)) then "moved" else empty end),
+    (ev($e; "pushed_at") as $t | if $t != null and ($t[0:10] < $cutoff) then "stale" else empty end),
+    (ev($e; "release_date") as $t | if $t != null and ($t[0:10] < $cutoff) then "release-stale" else empty end),
+    (ev($e; "license") as $l
+      | if $l == null then empty
+        elif $l == "NONE" then "no-license"
+        elif ($l == "NOASSERTION" or $l == "OTHER") then "license-unknown"
+        elif any($allow[]; lower == ($l | lower)) then empty
+        else "license-not-allowlisted" end),
+    (if ((ev($e; "language") // "") | lower) == "python" then "python" else empty end),
+    (if ev($e; "package_deprecated") == true then "package-deprecated" else empty end),
+    (if $V.ok then
+       [($V.data.relatedProjects // [])[] | select(.relationType == "SOURCE_REPO") | ((.projectKey.id // "") | lower)] as $srcs
+       | if ($srcs | length) > 0 and (any($srcs[]; . == ("github.com/" + ($canon | lower))) | not)
+         then "package-unlinked" else empty end
+     else empty end),
+    (if (ev($e; "osv_advisories") // 0) > 0 then "advisories" else empty end),
+    (if (ev($e; "osv_critical") // 0) > 0 then "critical-advisories" else empty end)
+  ]'
+
+# TEXT renders the records as an aligned table with indented package and missing lines.
+# shellcheck disable=SC2016  # a jq program: its $names are jq variables, not shell expansions
+TEXT='
+def cell($e; $k): if $e[$k].value == null then "?" else ($e[$k].value | tostring) end;
+def day($e; $k): if $e[$k].value == null then "?" else ($e[$k].value | tostring | .[0:10]) end;
+def pad($n): . + (" " * ($n - length));
+[inputs] as $recs
+| ([["REPO", "LANG", "STARS", "PUSHED", "RELEASE", "SCORECARD", "MAINT", "LICENSE", "FLAGS"]]
+   + [$recs[] | .evidence as $e
+      | [ ($e.full_name.value // .candidate),
+          cell($e; "language"),
+          cell($e; "stars"),
+          day($e; "pushed_at"),
+          (if $e.release_tag.value == null then "?" else cell($e; "release_tag") + " " + day($e; "release_date") end),
+          (if $e.scorecard.value == null then "?" else cell($e; "scorecard") + " " + day($e; "scorecard_date") end),
+          cell($e; "maintained"),
+          cell($e; "license"),
+          (if (.flags | length) == 0 then "-" else (.flags | join(",")) end) ]]) as $rows
+| ($rows | transpose | map(map(length) | max)) as $w
+| def fmt: . as $row
+    | [range(0; $row | length) as $j
+       | if $j == ($row | length) - 1 then $row[$j] else ($row[$j] | pad($w[$j])) end]
+    | join("  ");
+  ($rows[0] | fmt),
+  (range(0; $recs | length) as $i
+   | $recs[$i] as $r | $r.evidence as $e
+   | ($rows[$i + 1] | fmt),
+     (if $r.package == null then empty else
+        "  package " + $r.package + ": latest " + cell($e; "package_latest")
+        + " (" + day($e; "package_published") + "), " + cell($e; "package_versions") + " versions, license "
+        + cell($e; "package_license") + ", dependents " + cell($e; "dependents") + ", advisories "
+        + cell($e; "osv_advisories") + " (critical " + cell($e; "osv_critical") + ", unrated "
+        + cell($e; "osv_unrated") + ")" end),
+     ([$e | to_entries[] | select(.value.missing != null and ((.value.missing | startswith("not requested")) | not))]
+      | group_by(.value.missing)[]
+      | "  missing " + (map(.key) | join(", ")) + ": " + .[0].value.missing)),
+  "retrieved " + ($recs[0].retrieved_at // "?") + "; --json adds the source URL of every field"'
+
+# gather <index> <owner/repo> <package spec>: fetch every source for one candidate, then assemble.
+gather() {
+  local i="$1" slug="$2" spec="$3" d kind canon reason ver=""
+  local u_repo u_rel u_sc u_dd u_pkg="" u_ver="" u_dep="" u_osv="" f
+  d="${WORK}/c${i}"
+  mkdir -p "${d}"
+  now_iso >"${d}/retrieved_at"
+  P_SYS="" P_OSV="" P_NAME=""
+  [ -z "${spec}" ] || pkg_parse "${spec}"
+  u_repo="${GITHUB_API}/repos/${slug}"
+
+  # Round 1: the repository (its canonical name drives the case-sensitive Scorecard lookup) and,
+  # independently, the package version list.
+  fetch_gh "${d}/repo" "repository not found on GitHub" "repos/${slug}" "${REPO_FILTER}" &
+  if [ -n "${spec}" ]; then
+    u_pkg="${DEPSDEV_API}/v3/systems/${P_SYS}/packages/$(urienc "${P_NAME}")"
+    fetch_http "${d}/pkg" "package not found in deps.dev" "${u_pkg}" &
+  fi
+  wait
+
+  kind=$(result_kind "${d}/repo")
+  canon="${slug}"
+  if [ "${kind}" = ok ]; then
+    canon=$(jq -r '.data.full_name // empty' "${d}/repo")
+    [ -n "${canon}" ] || canon="${slug}"
+  fi
+  u_rel="${GITHUB_API}/repos/${canon}/releases/latest"
+  u_sc="${SCORECARD_API}/projects/github.com/${canon}"
+  u_dd="${DEPSDEV_API}/v3/projects/$(urienc "github.com/${canon}")"
+
+  # Round 2: everything that needs the canonical name or the package's latest version.
+  case "${kind}" in
+    ok)
+      fetch_gh "${d}/rel" "no GitHub release" "repos/${canon}/releases/latest" "${REL_FILTER}" &
+      fetch_http "${d}/sc" "not scanned by OpenSSF Scorecard" "${u_sc}" &
+      fetch_http "${d}/dd" "project not in deps.dev" "${u_dd}" &
+      ;;
+    notfound)
+      for f in rel sc dd; do result_fail "${d}/${f}" skipped "skipped: repository not found"; done
+      ;;
+    *)
+      result_fail "${d}/rel" skipped "skipped: GitHub repository metadata unavailable"
+      fetch_http "${d}/sc" "not scanned by OpenSSF Scorecard" "${u_sc}" &
+      fetch_http "${d}/dd" "project not in deps.dev" "${u_dd}" &
+      ;;
+  esac
+  if [ -z "${spec}" ]; then
+    for f in pkg ver osv dep; do result_fail "${d}/${f}" notrequested "not requested (pass --package)"; done
+  elif [ "$(result_kind "${d}/pkg")" = ok ]; then
+    ver=$(jq -r "${JQ_LATEST}"' .data | latest | .versionKey.version // empty' "${d}/pkg" 2>/dev/null) || ver=""
+    if [ -n "${ver}" ]; then
+      u_ver="${u_pkg}/versions/$(urienc "${ver}")"
+      u_dep="${DEPSDEV_API}/v3alpha/systems/${P_SYS}/packages/$(urienc "${P_NAME}")/versions/$(urienc "${ver}"):dependents"
+      u_osv="${OSV_API}/v1/query"
+      fetch_http "${d}/ver" "version not found in deps.dev" "${u_ver}" &
+      fetch_http "${d}/dep" "dependents not available in deps.dev" "${u_dep}" &
+      fetch_http "${d}/osv" "OSV query rejected" "${u_osv}" \
+        "$(jq -cn --arg n "${P_NAME}" --arg e "${P_OSV}" --arg v "${ver}" '{package: {name: $n, ecosystem: $e}, version: $v}')" &
+    else
+      for f in ver osv dep; do result_fail "${d}/${f}" skipped "no versions listed in deps.dev"; done
+    fi
+  else
+    reason=$(jq -r '.reason // "package evidence unavailable"' "${d}/pkg" 2>/dev/null) || reason="package evidence unavailable"
+    for f in ver osv dep; do result_fail "${d}/${f}" skipped "skipped: ${reason}"; done
+  fi
+  wait
+
+  for f in repo rel sc dd pkg ver osv dep; do
+    [ -s "${d}/${f}" ] || result_fail "${d}/${f}" internal "no result recorded"
+  done
+  jq -n -c \
+    --slurpfile repo "${d}/repo" --slurpfile rel "${d}/rel" --slurpfile sc "${d}/sc" \
+    --slurpfile dd "${d}/dd" --slurpfile pkg "${d}/pkg" --slurpfile ver "${d}/ver" \
+    --slurpfile osv "${d}/osv" --slurpfile dep "${d}/dep" \
+    --arg cand "${slug}" --arg canon "${canon}" --arg spec "${spec}" \
+    --arg retrieved "$(cat "${d}/retrieved_at")" --arg cutoff "${CUTOFF}" \
+    --argjson allow "${LICENSES_JSON}" \
+    --arg u_repo "${u_repo}" --arg u_rel "${u_rel}" --arg u_sc "${u_sc}" --arg u_dd "${u_dd}" \
+    --arg u_pkg "${u_pkg}" --arg u_ver "${u_ver}" --arg u_dep "${u_dep}" --arg u_osv "${u_osv}" \
+    "${ASSEMBLE}" >"${d}/record.tmp" && mv "${d}/record.tmp" "${d}/record.json"
+}
+
+# ---------- main ----------
+
+i=0
+while [ "${i}" -lt "${NREPO}" ]; do
+  gather "${i}" "${REPOS[i]}" "${SPECS[i]}" &
+  i=$((i + 1))
+  if [ $((i % PARALLEL)) -eq 0 ]; then wait; fi
+done
+wait
+
+RECORDS=()
+NREC=0
+notfound=""
+unavailable=""
+i=0
+while [ "${i}" -lt "${NREPO}" ]; do
+  d="${WORK}/c${i}"
+  if [ -s "${d}/record.json" ]; then
+    RECORDS[NREC]="${d}/record.json"
+    NREC=$((NREC + 1))
+    case "$(result_kind "${d}/repo")" in
+      ok) ;;
+      notfound) notfound="${notfound} ${REPOS[i]}" ;;
+      *) unavailable="${unavailable} ${REPOS[i]}" ;;
+    esac
+  else
+    unavailable="${unavailable} ${REPOS[i]}"
+    note "internal error: no evidence record for ${REPOS[i]}"
+  fi
+  i=$((i + 1))
+done
+
+if [ "${NREC}" -gt 0 ]; then
+  if [ "${JSON}" = 1 ]; then
+    jq -n -r '[inputs] | "[", (map(tojson) | join(",\n")), "]"' "${RECORDS[@]}"
+  else
+    jq -n -r "${TEXT}" "${RECORDS[@]}"
+  fi
+fi
+
+[ -z "${notfound}" ] || note "not found on GitHub:${notfound}"
+[ -z "${unavailable}" ] || note "GitHub metadata unavailable (see the missing reasons):${unavailable}"
+if [ -n "${unavailable}" ]; then exit 3; fi
+if [ -n "${notfound}" ]; then exit 1; fi
+exit 0

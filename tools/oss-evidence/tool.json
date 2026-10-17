@@ -1,0 +1,48 @@
+{
+  "schema": "tool/v1",
+  "name": "oss-evidence",
+  "summary": "Use when evaluating open source repos: GitHub, Scorecard, deps.dev, OSV evidence",
+  "intents": [
+    "evaluate open source project",
+    "compare github repos",
+    "oss maturity evidence",
+    "scorecard for repo",
+    "adopt or build research",
+    "is this library maintained",
+    "latest release of a github repo",
+    "license of a github repo",
+    "package dependents and advisories",
+    "osv advisories for a package version",
+    "scout candidate evidence",
+    "openssf scorecard score"
+  ],
+  "tags": ["github", "gh", "oss", "scorecard", "deps-dev", "osv", "scout"],
+  "kind": "script",
+  "scope": "global",
+  "entry": "oss-evidence",
+  "language": "bash",
+  "side_effects": "remote-read",
+  "exit_codes": {
+    "0": "every candidate repository was found; individual fields may still be recorded missing",
+    "1": "at least one candidate repository does not exist on GitHub (HTTP 404); the others are still shown",
+    "2": "usage error",
+    "3": "environment failure: gh, curl or jq missing, config unusable, gh not authenticated, or GitHub metadata unavailable (rate limit, timeout, network)"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["gh", "curl", "jq"],
+  "config": ["oss_evidence.license_allowlist"],
+  "test": "bash test.sh",
+  "replaces": [
+    "\\bgh\\s+api\\s+['\"]?/?repos/\\S+/releases/latest",
+    "\\bgh\\s+api\\s+['\"]?/?repos/[^\\s'\"]+['\"]?\\s.*\\b(?:stargazers_count|pushed_at|spdx_id)\\b",
+    "\\bcurl\\b.*\\bapi\\.(?:scorecard|securityscorecards)\\.dev/projects/",
+    "\\bcurl\\b.*\\bapi\\.deps\\.dev/v3",
+    "\\bcurl\\b.*\\bapi\\.osv\\.dev/v1/query"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-17",
+    "builder": "claude-opus-5-5",
+    "task": "rice-kb:.scratch/agent-ecosystem-v1/issues/02-oss-evidence-scout-tool.md"
+  }
+}

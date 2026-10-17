@@ -1,0 +1,1 @@
+{"date":"2026-10-10","repo":{"name":"github.com/pyorg/pylib","commit":"2222222222222222222222222222222222222222"},"scorecard":{"version":"v5.6.0","commit":"61e84743356275f6ffca23b1b2f2cb945e19eb96"},"score":5.2,"checks":[{"name":"Maintained","score":-1,"reason":"project was created within the last 90 days. Please review its contents carefully"}]}
