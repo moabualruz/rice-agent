@@ -16,6 +16,11 @@ vet:
 
 test:
     env -u GOFLAGS go test ./...
+    bash scripts/deploy.test.sh
+
+# Release TAG to this machine and every hosts.<name>.install host (see scripts/deploy.sh --help).
+deploy TAG *ARGS:
+    bash scripts/deploy.sh {{TAG}} {{ARGS}}
 
 # Admission gates G1 to G6 on every tool under tools/.
 tools: build

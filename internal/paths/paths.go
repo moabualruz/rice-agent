@@ -35,6 +35,12 @@ type Semantic struct {
 type Host struct {
 	SSH   string `json:"ssh"`             // user@address
 	Shell string `json:"shell,omitempty"` // login shell family, for example fish or bash
+	// Install is how scripts/deploy.sh releases a tag to this host: "bundle" (agent-dry install
+	// --remote, for hosts without Go or GitHub access) or "clone" (fetch, fast-forward or detach,
+	// and build the clone at Root). Empty means deploy skips the host.
+	Install string `json:"install,omitempty"`
+	// Root is the clone directory deploy uses when Install is "clone" (default ~/workspace/agent-dry).
+	Root string `json:"root,omitempty"`
 }
 
 // OpenBao names the endpoint and the local access reference; never a secret value.

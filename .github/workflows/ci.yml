@@ -76,3 +76,7 @@ jobs:
       - name: Tool admission gates
         shell: bash
         run: bin/agent-dry check --all
+
+      - name: Script tests
+        shell: bash
+        run: bash scripts/deploy.test.sh

@@ -19,6 +19,7 @@ agent-dry new <name> --kind script --scope global --task <ref> --summary "Use wh
 agent-dry check <name>                # admission gates G1 to G6
 agent-dry install                     # link agent-dry and global tools into ~/.local/bin
 agent-dry install --remote hetzner    # hosts without Go get a bundle over SSH
+just deploy v0.2.3 --dry-run          # release a tag here and to every hosts.<name>.install host
 agent-dry vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
 agent-dry audit --since 14d           # is DRY happening: lookups, reimplementations, copies
 ```
