@@ -30,9 +30,11 @@ candidate and a published decision, never in code.
      constraints, integration cost (wrapper needed or not).
 5. Verify the top candidate locally: install it in a scratch location, run its `--help` and one
    representative task, and record versions.
-6. Decide with ThoughtWorks rings: adopt, trial, assess or hold. Build only when every candidate is
+6. Rethink: compare the evidence with the original plan, change the plan when it shows a better or
+   existing solution, and state what changed.
+7. Decide with ThoughtWorks rings: adopt, trial, assess or hold. Build only when every candidate is
    vetoed or fails the representative task, and say why.
-7. Publish the evidence and verdict as a Rice research or decision document (the `rice-research`
+8. Publish the evidence and verdict as a Rice research or decision document (the `rice-research`
    skill), then integrate: an external entry in `registry/providers.json` for a CLI, a pinned
    dependency for a library, or an agent-dry tool only for a thin composition.
 

@@ -286,11 +286,13 @@ func TestSectionFollowsDanglingSymlink(t *testing.T) {
 	}
 }
 
-func TestSectionGrokLimit(t *testing.T) {
+// Grok loads each instruction file in full (its user guide, 12-project-rules.md: "no character
+// cap and no truncation"), so a block deep in the Grok entry passes.
+func TestSectionGrokEntryHasNoCharacterLimit(t *testing.T) {
 	home := tempDir(t)
 	block := sourceBlock(t, drySource)
 	grok := filepath.Join(home, ".grok/AGENTS.md")
-	writeFile(t, grok, strings.Repeat("g", grokLimit)+"\n"+block+"\n", 0o644)
+	writeFile(t, grok, strings.Repeat("g", 50000)+"\n"+block+"\n", 0o644)
 	if code, _, errb := installSection(t, home, "DRY_POLICY", drySource); code != 0 {
 		t.Fatal(errb)
 	}
@@ -299,17 +301,75 @@ func TestSectionGrokLimit(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatal(err)
 	}
-	failed := 0
-	for _, f := range rep.Files {
-		if !f.Pass {
-			failed++
-			if f.Path != grok || !strings.Contains(strings.Join(f.Problems, ";"), "Grok reads only the first 10000") {
-				t.Errorf("unexpected failure: %+v", f)
-			}
+	if code != 0 || !rep.Pass {
+		t.Fatalf("grok entry: %d %+v", code, rep)
+	}
+}
+
+// A wrapper that loads the kernel by import keeps no copy: install removes a stale block,
+// a rerun leaves it alone, and check fails if a copy comes back.
+func TestSectionWrapperDefersToKernel(t *testing.T) {
+	home := tempDir(t)
+	block := sourceBlock(t, drySource)
+	compiled := filepath.Join(home, ".config/agent-instructions/compiled")
+	wrapper := filepath.Join(compiled, "CLAUDE.md")
+	body := "# Claude Code Global Rules\n\n" + deferLine + "\n\n@~/.config/agent-instructions/shared/KERNEL.md\n"
+	writeFile(t, wrapper, block+"\n\n"+body, 0o644)
+	link := filepath.Join(home, ".claude/CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(wrapper, link); err != nil {
+		t.Fatal(err)
+	}
+	front := "---\ndescription: Shared owner instructions\nalwaysApply: true\n---\n"
+	mdcBody := "# Cursor Global Rules\n" + deferLine + "\n"
+	mdc := filepath.Join(compiled, "cursor-agent-instructions.mdc")
+	writeFile(t, mdc, front+block+"\n\n"+mdcBody, 0o644)
+	override := filepath.Join(compiled, "codex-home-AGENTS.override.md")
+	writeFile(t, override, "# Home directory\n"+block+"\n"+deferLine+"\n", 0o644)
+	kernel := filepath.Join(home, ".config/agent-instructions/shared/KERNEL.md")
+	writeFile(t, kernel, "# Agent Kernel\n", 0o644)
+
+	code, r, errb := installSection(t, home, "DRY_POLICY", drySource)
+	if code != 0 {
+		t.Fatalf("install: %d %s", code, errb)
+	}
+	for path, want := range map[string]string{wrapper: body, mdc: front + mdcBody, override: "# Home directory\n" + deferLine + "\n",
+		kernel: block + "\n\n# Agent Kernel\n"} {
+		if got := readFile(t, path); got != want {
+			t.Errorf("%s: %q, want %q", path, got, want)
 		}
 	}
-	if code != 1 || rep.Pass || failed != 1 {
-		t.Fatalf("grok limit: %d %+v", code, rep)
+	if dest, _ := os.Readlink(link); dest != wrapper {
+		t.Fatalf("symlink replaced: %q", dest)
+	}
+	removed := 0
+	for _, x := range r.Targets {
+		if x.Action == "removed" {
+			removed++
+		}
+	}
+	if removed != 3 {
+		t.Fatalf("removed %d: %+v", removed, r.Targets)
+	}
+	code, r, errb = installSection(t, home, "DRY_POLICY", drySource)
+	if code != 0 || readFile(t, wrapper) != body {
+		t.Fatalf("rerun: %d %s", code, errb)
+	}
+	for _, x := range r.Targets {
+		if x.Path == wrapper && x.Action != "deferred" {
+			t.Fatalf("rerun wrapper action %s", x.Action)
+		}
+	}
+	code, out, _ := run(t, sectionVars(home), "section", "check", "--name", "DRY_POLICY", "--source", drySource, "--destination", home)
+	if code != 0 || !strings.Contains(out, "PASS "+wrapper+" (loads it from shared/KERNEL.md)") {
+		t.Fatalf("check: %d %s", code, out)
+	}
+	writeFile(t, wrapper, block+"\n\n"+body, 0o644)
+	code, out, _ = run(t, sectionVars(home), "section", "check", "--name", "DRY_POLICY", "--source", drySource, "--destination", home)
+	if code != 1 || !strings.Contains(out, "FAIL "+wrapper+": loads sections from shared/KERNEL.md but carries a copy of the block") {
+		t.Fatalf("duplicate check: %d %s", code, out)
 	}
 }
 

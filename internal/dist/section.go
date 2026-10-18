@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/moabualruz/agent-dry/internal/cli"
 	"github.com/moabualruz/agent-dry/internal/paths"
@@ -32,13 +31,17 @@ every harness instruction file under the destination home, preserving all other 
   ~/.hermes/AGENTS.md, ~/.hermes/HERMES.md, ~/.cursor/rules/agent-instructions.mdc (only when present),
   and with --project-root, the Cursor project rule <root>/.cursor/rules/<name>.mdc.
 Symlinks are resolved so each real file is written once and links survive. An existing block is
-replaced in place; a missing block is inserted at the top, after any YAML front matter. Every file
-is checked before any is written: unequal or duplicate markers, or a path escaping the
-destination, refuse the whole run. Writes are atomic, preserve mode and are read back. A JSON
-receipt with the source sha256 and every file's action and sha256 goes to stdout.
+replaced in place; a missing block is inserted at the top, after any YAML front matter. A file
+holding the line
+  <!-- agent-dry: managed sections load from shared/KERNEL.md -->
+is an import wrapper or loader that gets every section through the kernel: install removes the
+block from it and never inserts one. Every file is checked before any is written: unequal or
+duplicate markers, or a path escaping the destination, refuse the whole run. Writes are atomic,
+preserve mode and are read back. A JSON receipt with the source sha256 and every file's action
+(inserted, updated, removed, unchanged or deferred) and sha256 goes to stdout.
 
 check verifies every existing target holds exactly one block byte-identical to the source with
-no em or en dash, and that the Grok entry holds it within its first 10,000 characters.
+no em or en dash, and that every file with the wrapper line holds none.
 
 Options:
   --name <NAME>          section name, upper snake case, for example DRY_POLICY
@@ -62,11 +65,19 @@ var (
 	existingTargets = []string{"AGENTS.override.md", ".codex/AGENTS.override.md", ".grok/AGENTS.md", ".pi/agent/AGENTS.md", ".hermes/AGENTS.md", ".hermes/HERMES.md", ".cursor/rules/agent-instructions.mdc"}
 )
 
-// grokEntry reads only the first grokLimit characters of its instructions.
-const (
-	grokEntry = ".grok/AGENTS.md"
-	grokLimit = 10000
-)
+// deferLine marks a file that loads every managed section from shared/KERNEL.md (an import
+// wrapper or a loader such as the Codex home override), so it must not carry a copy.
+const deferLine = "<!-- agent-dry: managed sections load from shared/KERNEL.md -->"
+
+// defers reports whether content holds deferLine as a whole line.
+func defers(content string) bool {
+	for _, line := range lineBreak.Split(content, -1) {
+		if strings.TrimSpace(line) == deferLine {
+			return true
+		}
+	}
+	return false
+}
 
 const mdcHeader = "---\ndescription: Shared owner instructions\nalwaysApply: true\n---\n\n"
 
@@ -100,7 +111,7 @@ type sectionTarget struct {
 type SectionResult struct {
 	Path    string   `json:"path"`
 	Entries []string `json:"entries,omitempty"`
-	Action  string   `json:"action"` // inserted, updated, unchanged
+	Action  string   `json:"action"` // inserted, updated, removed, unchanged, deferred
 	SHA256  string   `json:"sha256"`
 }
 
@@ -443,6 +454,25 @@ func planSection(s *section, t *sectionTarget) (*plannedWrite, error) {
 	}
 	i, j, starts, ends, ok := blockSpan(before, s)
 	var after, action string
+	if defers(before) {
+		switch {
+		case starts == 0 && ends == 0:
+			return &plannedWrite{t: t, before: before, after: before, action: "deferred", mode: mode}, nil
+		case !ok:
+			return nil, fmt.Errorf("ambiguous managed section: %s", t.path)
+		}
+		// Undo the inserted layout (block and a blank line at the top or after front matter);
+		// elsewhere drop the block and its own line break.
+		rest := before[j:]
+		if top := i == 0 || i == len(frontMatter.FindString(before)); top && strings.HasPrefix(rest, "\n\n") {
+			rest = rest[2:]
+		} else if strings.HasPrefix(rest, "\r\n") {
+			rest = rest[2:]
+		} else if strings.HasPrefix(rest, "\n") {
+			rest = rest[1:]
+		}
+		return &plannedWrite{t: t, before: before, after: before[:i] + rest, action: "removed", mode: mode}, nil
+	}
 	switch {
 	case ok:
 		after = before[:i] + s.source + before[j:]
@@ -498,7 +528,11 @@ func sectionInstall(env *cli.Env, s *section, home string, projects []string, ru
 		Destination: home, DryRun: dryRun, Targets: []SectionResult{}, Entries: entries, ProjectRules: []projectRuleReceipt{}}
 	receipt.ProjectRules = append(receipt.ProjectRules, rules...)
 	for _, p := range plans {
-		if !dryRun && p.action != "unchanged" {
+		want := 1 // copies of the block the file must hold afterwards
+		if p.action == "removed" || p.action == "deferred" {
+			want = 0
+		}
+		if !dryRun && p.action != "unchanged" && p.action != "deferred" {
 			if p.t.project != "" {
 				raw, err := os.ReadFile(p.t.path)
 				now := string(raw)
@@ -517,7 +551,7 @@ func sectionInstall(env *cli.Env, s *section, home string, projects []string, ru
 		content := p.after
 		if !dryRun {
 			raw, err := os.ReadFile(p.t.path)
-			if err != nil || string(raw) != p.after || strings.Count(string(raw), s.source) != 1 {
+			if err != nil || string(raw) != p.after || strings.Count(string(raw), s.source) != want {
 				return cli.Envf(env, "section: instruction verification failed: %s", p.t.path)
 			}
 			content = string(raw)
@@ -538,6 +572,7 @@ type SectionCheck struct {
 	Pass        bool     `json:"pass"`
 	Problems    []string `json:"problems,omitempty"`
 	BlockSHA256 string   `json:"block_sha256,omitempty"`
+	Deferred    bool     `json:"deferred,omitempty"` // loads sections from shared/KERNEL.md
 }
 
 type sectionCheckReport struct {
@@ -565,8 +600,12 @@ func sectionCheck(env *cli.Env, s *section, home string, asJSON bool) int {
 			c.Problems = append(c.Problems, "dangling symlink")
 		} else if raw, err := os.ReadFile(t.path); err != nil {
 			c.Problems = append(c.Problems, "unreadable: "+err.Error())
+		} else if content := string(raw); defers(content) {
+			c.Deferred = true
+			if _, _, starts, ends, _ := blockSpan(content, s); starts != 0 || ends != 0 {
+				c.Problems = append(c.Problems, "loads sections from shared/KERNEL.md but carries a copy of the block")
+			}
 		} else {
-			content := string(raw)
 			i, j, starts, ends, ok := blockSpan(content, s)
 			if !ok && starts == 1 && ends == 1 {
 				c.Problems = append(c.Problems, "end marker precedes start marker")
@@ -580,13 +619,6 @@ func sectionCheck(env *cli.Env, s *section, home string, asJSON bool) int {
 				}
 				if hasDash(block) {
 					c.Problems = append(c.Problems, "block contains an em or en dash")
-				}
-				for _, e := range t.entries {
-					if e == filepath.Join(home, filepath.FromSlash(grokEntry)) {
-						if n := utf8.RuneCountInString(content[:j]); n > grokLimit {
-							c.Problems = append(c.Problems, fmt.Sprintf("block ends at character %d; Grok reads only the first %d", n, grokLimit))
-						}
-					}
 				}
 			}
 		}
@@ -604,7 +636,9 @@ func sectionCheck(env *cli.Env, s *section, home string, asJSON bool) int {
 	} else {
 		fmt.Fprintf(env.Stdout, "section %s: source sha256 %s\n", s.name, rep.SourceSHA256)
 		for _, c := range rep.Files {
-			if c.Pass {
+			if c.Pass && c.Deferred {
+				fmt.Fprintf(env.Stdout, "PASS %s (loads it from shared/KERNEL.md)\n", c.Path)
+			} else if c.Pass {
 				fmt.Fprintf(env.Stdout, "PASS %s\n", c.Path)
 			} else {
 				fmt.Fprintf(env.Stdout, "FAIL %s: %s\n", c.Path, strings.Join(c.Problems, "; "))

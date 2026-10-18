@@ -11,6 +11,10 @@ decision. When the work is about to repeat, the tool is built first and the curr
 user. Nothing is reconstructed from a finished transcript: there is no "save what I did for next time"
 step, because the lookup already records what it could not find.
 
+## Product work
+
+The same principles apply to product code in every project, not only to tools. Think first: write down the goal, the assumptions and how success will be checked before editing, and ask when the request is ambiguous. Research first, locally and online: search this project's code with zvec-grep for an existing module, the owner's tools with `agent-dry find`, and the web for proven libraries, services and primary documentation (`agent-dry guide scout`, `oss-evidence`). Then rethink: compare the findings with the plan, change the plan when they show a better or existing solution, and say what changed. Adopt or adapt before writing new code. Keep the code DRY: extend existing modules, keep one source of truth for each rule, constant and schema, and share across projects through libraries or `agent-dry vendor`. Change surgically and verify with diagnostics, build and tests (`agent-dry guide surgeon`).
+
 ## Work
 
 ### 1. Find
