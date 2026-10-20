@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, readdirSync, statSync, copyFileSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +108,32 @@ if (!native) {
       assert.equal(existsSync(f.receiptPath), true);
     });
   }
+  test('configured gate and real install doctor work without optional fallback just', (t) => {
+    const f = mock(t, valid);
+    const home = join(f.root, 'home');
+    const registry = join(f.root, 'registry');
+    const prefix = join(home, '.local/bin');
+    const thin = join(f.root, 'thin-path');
+    const tool = join(registry, 'tools/git-canonical-gate');
+    for (const dir of [prefix, thin, tool, join(registry, 'bin'), join(registry, 'registry')]) mkdirSync(dir, { recursive: true });
+    copyFileSync(join(here, '../../registry/wanted.json'), join(registry, 'registry/wanted.json'));
+    const gitPath = run('bash', ['-c', 'command -v git'], f.repo).stdout.trim();
+    symlinkSync(gitPath, join(thin, 'git'));
+    symlinkSync(process.execPath, join(thin, 'node'));
+    const isolated = { PATH: `${thin}:${prefix}`, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), XDG_STATE_HOME: join(home, '.state'), AGENT_DRY_ROOT: registry, AGENT_DRY_CONFIG: join(f.root, 'config.json') };
+    assert.equal(run('/bin/bash', [entry], f.repo, isolated).status, 0);
+    git(f.repo, 'config', '--local', '--unset', 'rice.canonicalGateRoot');
+    assert.equal(run('/bin/bash', [entry], f.repo, isolated).status, 3);
+    for (const name of ['tool.json', 'git-canonical-gate']) copyFileSync(join(here, name), join(tool, name));
+    const cli = join(registry, 'bin/agent-dry');
+    copyFileSync(join(here, '../../bin/agent-dry'), cli);
+    writeFileSync(isolated.AGENT_DRY_CONFIG, JSON.stringify({ root: registry }));
+    const installed = run(cli, ['install'], f.repo, isolated);
+    assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+    const doctor = run(cli, ['doctor', '--json'], f.repo, isolated);
+    assert.equal(doctor.status, 0, doctor.stdout + doctor.stderr);
+    assert.equal(JSON.parse(doctor.stdout).healthy, true);
+  });
   test('configured unavailable producer never falls back, including empty config', (t) => {
     const f = fixture(t);
     writeFileSync(join(f.repo, 'justfile'), 'ci:\n    @touch .git/forbidden-fallback\n');
