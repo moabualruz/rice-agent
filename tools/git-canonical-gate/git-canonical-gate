@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Promoted from moabualruz/rice-observe 9a9f20236b1ea3aa194271948aecfed8dc1d5870,
+# .githooks/pre-push-gate.sh and .ts. Original private owner rights are retained.
+# Single-entry packaging keeps supported agent-dry vendoring self-contained.
+set -euo pipefail
+
+case "${1:-}" in
+  -h | --help)
+    cat <<'EOF'
+Usage: git-canonical-gate [--dry-run | --help]
+
+Delegate the current Git HEAD and origin/main to the configured canonical producer.
+Read repo-local rice.canonicalGateRoot. If absent, exec just ci. If configured,
+load scripts/lib/merge-hygiene.js there and call its unchanged runRepositoryGate
+with the actual six-field HEAD/base/repository/ref target and default dependencies.
+The producer owns execution and cache reuse; this adapter never manufactures,
+imports or writes a producer cache. No Observe server is required.
+
+Retain the actual producer result, including failures, under the Git-owned
+rice-gates/<head>-<base>.json (mode 600), then validate producer, target and status.
+Configured missing/invalid producers or receipts fail closed, never fall back.
+Git-local environment variables are scrubbed before target lookup and execution.
+The consumer hook owns readiness checks and must run them before this tool.
+
+Options:
+  --dry-run   print the plan without executing a gate or writing a receipt
+  -h, --help  show this help
+
+Requires Bash 3.2+, Git, and just for the unconfigured fallback; configured mode
+also requires Node 24+ (from the consuming environment) and the existing producer.
+The native gate can have its own effects; review its contract before configuring.
+Gate output is captured by the producer; adapter diagnostics are bounded.
+
+Exit codes:
+  0  canonical gate validated, native fallback succeeded, help or dry-run
+  1  configured producer, target, receipt or gate failed
+  2  usage error
+  3  missing runtime/dependency or Git configuration lookup failed
+  other  unconfigured just ci exit status, propagated unchanged
+
+Example:
+  git-canonical-gate
+EOF
+    exit 0 ;;
+  --dry-run)
+    [ "$#" -eq 1 ] || exit 2
+    printf '%s\n' 'plan: read repo-local producer setting; run canonical gate and retain/validate its actual receipt, or exec just ci if unconfigured'
+    exit 0 ;;
+  '') [ "$#" -eq 0 ] || exit 2 ;;
+  *) printf '%s\n' 'git-canonical-gate: unexpected argument; see --help' >&2; exit 2 ;;
+esac
+
+while IFS= read -r name; do
+  case "$name" in GIT_*) unset "$name" ;; esac
+done < <(compgen -e)
+command -v git >/dev/null 2>&1 || { printf '%s\n' 'git-canonical-gate: git is required' >&2; exit 3; }
+if canonical=$(git config --local --get rice.canonicalGateRoot 2>/dev/null); then
+  export RICE_CANONICAL_GATE_ROOT="$canonical"
+else
+  status=$?
+  [ "$status" -eq 1 ] || { printf '%s\n' 'git-canonical-gate: Git configuration lookup failed' >&2; exit 3; }
+  command -v just >/dev/null 2>&1 || { printf '%s\n' 'git-canonical-gate: just is required' >&2; exit 3; }
+  exec just ci
+fi
+command -v node >/dev/null 2>&1 || { printf '%s\n' 'git-canonical-gate: Node 24+ is required' >&2; exit 3; }
+exec node --input-type=module <<'NODE'
+// Structured target and receipt validation; Bash owns orchestration.
+import { realpathSync, existsSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
+
+if (Number(process.versions.node.split('.')[0]) < 24) {
+  console.error('[pre-push] Node 24+ is required');
+  process.exit(3);
+}
+class AdapterError extends Error {}
+try {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  const git = (...args) => {
+    try {
+      return execFileSync('git', args, { env, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    } catch {
+      throw new AdapterError('Git target lookup failed');
+    }
+  };
+  if (!process.env.RICE_CANONICAL_GATE_ROOT || !existsSync(process.env.RICE_CANONICAL_GATE_ROOT))
+    throw new AdapterError('configured canonical producer is unavailable');
+  const producerRoot = realpathSync(process.env.RICE_CANONICAL_GATE_ROOT);
+  const module = join(producerRoot, 'scripts/lib/merge-hygiene.js');
+  if (!existsSync(module)) throw new AdapterError('configured canonical producer is unavailable');
+  const root = realpathSync(git('rev-parse', '--show-toplevel'));
+  const origin = git('remote', 'get-url', 'origin');
+  const match = origin.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https?:\/\/github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/);
+  if (!match) throw new AdapterError('canonical producer requires a credential-free GitHub origin');
+  const repository = match[1].toLowerCase();
+  const target = { head_sha: git('rev-parse', 'HEAD'), base_sha: git('rev-parse', 'origin/main'),
+    head_repo: repository, base_repo: repository, head_ref: git('symbolic-ref', '--short', 'HEAD'), base_ref: 'main' };
+  const { runRepositoryGate } = createRequire(import.meta.url)(module);
+  const receipt = runRepositoryGate(root, target);
+  // Retain the actual producer result on failure too, before a bounded diagnostic.
+  const owned = git('rev-parse', '--git-path', 'rice-gates');
+  mkdirSync(owned, { recursive: true });
+  const receiptPath = join(owned, `${target.head_sha}-${target.base_sha}.json`);
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
+  chmodSync(receiptPath, 0o600);
+  if (receipt?.producer !== 'pr-verify-merge:repository-gate:v1' ||
+      receipt.head_sha !== target.head_sha || receipt.base_sha !== target.base_sha ||
+      (receipt.repository ?? receipt.base_repo) !== repository) throw new AdapterError('invalid canonical receipt target or producer');
+  if (!Number.isInteger(receipt.exit_status) || receipt.exit_status !== 0 || receipt.error)
+    throw new AdapterError('canonical gate failed; actual producer receipt retained under Git rice-gates');
+  console.log('[pre-push] canonical gate passed; reused=' + Boolean(receipt.reused));
+} catch (error) {
+  console.error('[pre-push] ' + (error instanceof AdapterError ? error.message : 'canonical producer failed'));
+  process.exitCode = 1;
+}
+NODE

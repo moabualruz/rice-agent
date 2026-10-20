@@ -50,6 +50,14 @@ jobs:
             exit 1
           fi
           env -u GOFLAGS go version
+          export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+          if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+            echo "::error::NVM is required; the canonical-gate tests need existing Node 24+"
+            exit 1
+          fi
+          source "$NVM_DIR/nvm.sh"
+          nvm use 24
+          dirname "$(command -v node)" >> "$GITHUB_PATH"
           missing=""
           for cmd in shellcheck jq; do
             command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"

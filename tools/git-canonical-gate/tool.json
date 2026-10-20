@@ -1,0 +1,39 @@
+{
+  "schema": "tool/v1",
+  "name": "git-canonical-gate",
+  "summary": "Use when Git pushes need authentic canonical gate receipts and cached retries.",
+  "intents": [
+    "canonical repository gate",
+    "pre push gate cache retry",
+    "validate gate receipt producer"
+  ],
+  "kind": "script",
+  "scope": "global",
+  "entry": "git-canonical-gate",
+  "language": "bash",
+  "side_effects": "write-local",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "validated canonical gate, successful fallback, help or dry-run; other unlisted codes propagate the unconfigured native gate status",
+    "1": "configured producer, target, receipt or gate failed",
+    "2": "usage error",
+    "3": "missing runtime/dependency or Git configuration lookup failed"
+  },
+  "platforms": [
+    "darwin-arm64",
+    "linux-amd64"
+  ],
+  "requires": [
+    "git",
+    "just",
+    "node >= 24"
+  ],
+  "test": "bash test.sh",
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-20",
+    "builder": "gpt-6.1-sol",
+    "task": "rice-kb:.scratch/rice-index-v1/issues/32-ui-group-2-profiles-privacy-acl-storage.md",
+    "promoted_from": "moabualruz/rice-observe@9a9f20236b1ea3aa194271948aecfed8dc1d5870:.githooks/pre-push-gate.sh + .ts; original private owner rights retained"
+  }
+}
