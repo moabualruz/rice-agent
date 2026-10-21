@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -24,15 +25,16 @@ var now = time.Now
 
 const usageText = `Usage: agent-dry audit [--since 14d] [--transcripts <dir>] [--max-files N] [--json]
 
-Measure lookup, reuse and re-typing (spec section 10) from Claude Code transcripts, the find
-miss log and the tool manifests, against the recorded baselines. Prints counts, tool names,
-configured host names and miss tokens only; never command text.
+Measure lookup, reuse and re-typing (spec section 10) from Claude Code transcripts, Codex sessions,
+the find miss log and the tool manifests, against the recorded baselines. Reports agent-dry
+find/new/check/guide counts by day, host and harness. Prints counts, tool names, configured host
+names and miss tokens only; never command text.
 
 Options:
   --since D          window: Nd or Nw (from local midnight), Nh or a Go duration (default 14d);
                      files modified and tool calls made before it are skipped
-  --transcripts DIR  transcript root (default ~/.claude/projects); reads DIR/*/*.jsonl and
-                     DIR/*/*/subagents/*.jsonl; session id is the file stem
+  --transcripts DIR  Claude transcript root (default ~/.claude/projects); also reads
+                     ~/.codex/sessions/YYYY/MM/DD/*.jsonl; session id is the file stem
   --max-files N      read at most N files, main sessions first, newest first (default 1000; 0 = no bound)
   --json             print the report as JSON (schema audit/v1)
 
@@ -132,19 +134,39 @@ func run(env *cli.Env) int {
 	if tdir == "" {
 		tdir = filepath.Join(home, ".claude", "projects")
 	}
-	files, notRead, err := discover(tdir, cutoff, *maxFiles)
+	files, _, err := discover(tdir, cutoff, 0)
 	if err != nil {
 		return cli.Envf(env, "audit: transcript root: %v", err)
 	}
+	codexFiles, err := discoverCodex(filepath.Join(home, ".codex", "sessions"), cutoff)
+	if err != nil {
+		return cli.Envf(env, "audit: Codex sessions: %v", err)
+	}
+	files = append(files, codexFiles...)
+	files, notRead := limitTranscripts(files, *maxFiles)
 
 	c := newCollector(tools, cfg.Hosts, warn)
 	info := transcriptInfo{NotRead: notRead}
+	localHost := env.Getenv("HOSTNAME")
+	if localHost == "" {
+		localHost, _ = os.Hostname()
+	}
 	for _, f := range files {
-		err := scanFile(f.path, cutoff, func(ev event) { c.add(f.session, ev) }, c.wantResult, c.result)
+		session := f.harness + ":" + f.session
+		add := func(ev event) {
+			ev.host = c.commandHost(ev.cmd, localHost)
+			c.add(session, ev)
+		}
+		var scanErr error
+		if f.harness == "codex" {
+			scanErr = scanCodexFile(f.path, cutoff, add)
+		} else {
+			scanErr = scanFile(f.path, cutoff, add, c.wantResult, c.result)
+		}
 		c.endFile()
-		if err != nil {
+		if scanErr != nil {
 			info.Unreadable++
-			warn("transcript %s: %v", filepath.Base(f.path), err)
+			warn("transcript %s: %v", filepath.Base(f.path), scanErr)
 			continue
 		}
 		info.Files++

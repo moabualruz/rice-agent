@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-16T12:15:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"agent-dry find codex\"}","call_id":"codex-c1"}}
+{"timestamp":"2026-10-16T13:15:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"agent-dry guide tools\"}","call_id":"codex-c2"}}

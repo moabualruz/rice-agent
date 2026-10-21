@@ -4,6 +4,8 @@
 Every project, product code and tooling alike: reuse, adapt, improve, reduce, recycle, decided
 before acting. Details: `agent-dry guide <topic>`; agent-dry is a global exception.
 
+- In a resumed or long-running session, re-read `~/.config/agent-instructions/shared/KERNEL.md` before the next multi-step task.
+- Every multi-step task starts with `agent-dry find <intent>`, before any subagent fan-out; then state the choice: reuse, extend, build or inline.
 - Think first: goal, assumptions and success checks; ask when unclear; plan small steps.
 - Research first: before building, search this project (zvec-grep), the owner's tools
   (`agent-dry find`) and the web (`oss-evidence`); rethink, then adopt or adapt before writing.

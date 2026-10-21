@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,11 +14,12 @@ import (
 	"time"
 )
 
-// transcript is one Claude Code session file. Session id is the file stem.
+// transcript is one harness session file. Session id is the file stem.
 type transcript struct {
 	path     string
 	session  string
 	subagent bool
+	harness  string
 	mtime    time.Time
 }
 
@@ -90,15 +92,19 @@ func candidate(dir string, e os.DirEntry, cutoff time.Time, sub bool) (transcrip
 		path:     filepath.Join(dir, e.Name()),
 		session:  strings.TrimSuffix(e.Name(), ".jsonl"),
 		subagent: sub,
+		harness:  "claude",
 		mtime:    info.ModTime(),
 	}, true
 }
 
 // event is one tool_use from an assistant line. cmd lives only in memory and is never printed.
 type event struct {
-	id   string
-	tool string
-	cmd  string
+	id      string
+	tool    string
+	cmd     string
+	at      time.Time
+	harness string
+	host    string
 }
 
 // result is the outcome of a tool_use, joined by id.
@@ -148,9 +154,13 @@ func scanFile(path string, cutoff time.Time, onEvent func(event), wantResult fun
 			if json.Unmarshal(line, &l) != nil || l.Type != "assistant" {
 				return
 			}
+			at := time.Time{}
 			if l.Timestamp != "" {
-				if ts, err := time.Parse(time.RFC3339Nano, l.Timestamp); err == nil && ts.Before(cutoff) {
-					return
+				if ts, err := time.Parse(time.RFC3339Nano, l.Timestamp); err == nil {
+					at = ts
+					if ts.Before(cutoff) {
+						return
+					}
 				}
 			}
 			var blocks []contentBlock
@@ -161,7 +171,7 @@ func scanFile(path string, cutoff time.Time, onEvent func(event), wantResult fun
 				if b.Type != "tool_use" || b.Name == "" {
 					continue
 				}
-				ev := event{id: b.ID, tool: b.Name}
+				ev := event{id: b.ID, tool: b.Name, at: at, harness: "claude"}
 				if b.Name == "Bash" {
 					var in struct {
 						Command string `json:"command"`
@@ -215,4 +225,117 @@ func eachLine(r io.Reader, fn func([]byte)) error {
 			return err
 		}
 	}
+}
+
+// discoverCodex walks the official sessions/YYYY/MM/DD layout and also accepts YYYY/MM/*.jsonl.
+func discoverCodex(dir string, cutoff time.Time) ([]transcript, error) {
+	var out []transcript
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.ModTime().Before(cutoff) {
+			return nil
+		}
+		out = append(out, transcript{
+			path:    path,
+			session: strings.TrimSuffix(entry.Name(), ".jsonl"),
+			harness: "codex",
+			mtime:   info.ModTime(),
+		})
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].mtime.Equal(out[j].mtime) {
+			return out[i].mtime.After(out[j].mtime)
+		}
+		return out[i].path < out[j].path
+	})
+	return out, nil
+}
+
+func limitTranscripts(files []transcript, maxFiles int) ([]transcript, int) {
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].subagent != files[j].subagent {
+			return !files[i].subagent
+		}
+		if !files[i].mtime.Equal(files[j].mtime) {
+			return files[i].mtime.After(files[j].mtime)
+		}
+		return files[i].path < files[j].path
+	})
+	if maxFiles <= 0 || len(files) <= maxFiles {
+		return files, 0
+	}
+	left := len(files) - maxFiles
+	return files[:maxFiles], left
+}
+
+// scanCodexFile reads the current Codex rollout JSONL format, where function-call arguments are
+// themselves JSON strings. It retains only command text in memory for classification.
+func scanCodexFile(path string, cutoff time.Time, onEvent func(event)) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return eachLine(f, func(line []byte) {
+		var record struct {
+			Timestamp string `json:"timestamp"`
+			Type      string `json:"type"`
+			Payload   struct {
+				Type      string          `json:"type"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+				CallID    string          `json:"call_id"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &record) != nil || record.Type != "response_item" || record.Payload.Type != "function_call" {
+			return
+		}
+		at, err := time.Parse(time.RFC3339Nano, record.Timestamp)
+		if err == nil && at.Before(cutoff) {
+			return
+		}
+		if record.Payload.Name != "exec_command" {
+			return
+		}
+		var args struct {
+			Cmd     string `json:"cmd"`
+			Command string `json:"command"`
+		}
+		var raw string
+		if json.Unmarshal(record.Payload.Arguments, &raw) == nil {
+			_ = json.Unmarshal([]byte(raw), &args)
+		} else {
+			_ = json.Unmarshal(record.Payload.Arguments, &args)
+		}
+		cmd := args.Cmd
+		if cmd == "" {
+			cmd = args.Command
+		}
+		if cmd == "" {
+			return
+		}
+		if err != nil {
+			at = time.Time{}
+		}
+		onEvent(event{
+			id:      "codex:" + record.Payload.CallID,
+			tool:    "Bash",
+			cmd:     cmd,
+			at:      at,
+			harness: "codex",
+		})
+	})
 }

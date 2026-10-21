@@ -547,3 +547,125 @@ func TestLongLine(t *testing.T) {
 		t.Fatalf("long line events = %d", len(got))
 	}
 }
+
+func TestCommandUsageAcrossClaudeAndCodex(t *testing.T) {
+	f := setup(t, nil)
+	f.projects = filepath.Join(f.home, ".claude", "projects")
+	claudeSource := testdata(t, "usage", "claude", "-work-usage", "aaaaaaaa-aaaa-4aaa-8aaa-000000000001.jsonl")
+	claudeTarget := filepath.Join(f.projects, "-work-usage", filepath.Base(claudeSource))
+	if err := os.MkdirAll(filepath.Dir(claudeTarget), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(claudeSource, claudeTarget); err != nil {
+		t.Fatal(err)
+	}
+	codexSource := testdata(t, "usage", "codex", "2026", "10", "16", "rollout-2026-10-16T12-00-00-aaaaaaaa-aaaa-4aaa-8aaa-000000000002.jsonl")
+	codexTarget := filepath.Join(f.home, ".codex", "sessions", "2026", "10", "16", filepath.Base(codexSource))
+	if err := os.MkdirAll(filepath.Dir(codexTarget), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(codexSource, codexTarget); err != nil {
+		t.Fatal(err)
+	}
+	f.vars["HOSTNAME"] = "test-mac"
+
+	code, output, stderr := f.run(t, "--transcripts", f.projects, "--since", "14d", "--json")
+	if code != cli.ExitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	var got struct {
+		Transcripts  transcriptInfo `json:"transcripts"`
+		CommandUsage struct {
+			ByDay []struct {
+				Day   string `json:"day"`
+				Find  int    `json:"find"`
+				New   int    `json:"new"`
+				Check int    `json:"check"`
+				Guide int    `json:"guide"`
+			} `json:"by_day"`
+			ByHost []struct {
+				Host  string `json:"host"`
+				Find  int    `json:"find"`
+				New   int    `json:"new"`
+				Check int    `json:"check"`
+				Guide int    `json:"guide"`
+			} `json:"by_host"`
+			ByHarness []struct {
+				Harness string `json:"harness"`
+				Find    int    `json:"find"`
+				New     int    `json:"new"`
+				Check   int    `json:"check"`
+				Guide   int    `json:"guide"`
+			} `json:"by_harness"`
+		} `json:"command_usage"`
+	}
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, output)
+	}
+	if got.Transcripts.Files != 2 || got.Transcripts.Sessions != 2 {
+		t.Fatalf("transcripts = %+v, want Claude and Codex fixture sessions", got.Transcripts)
+	}
+	findDay := func(day string) [4]int {
+		for _, row := range got.CommandUsage.ByDay {
+			if row.Day == day {
+				return [4]int{row.Find, row.New, row.Check, row.Guide}
+			}
+		}
+		return [4]int{}
+	}
+	findHost := func(host string) [4]int {
+		for _, row := range got.CommandUsage.ByHost {
+			if row.Host == host {
+				return [4]int{row.Find, row.New, row.Check, row.Guide}
+			}
+		}
+		return [4]int{}
+	}
+	findHarness := func(harness string) [4]int {
+		for _, row := range got.CommandUsage.ByHarness {
+			if row.Harness == harness {
+				return [4]int{row.Find, row.New, row.Check, row.Guide}
+			}
+		}
+		return [4]int{}
+	}
+	if got := findDay("2026-10-15"); got != [4]int{1, 1, 0, 0} {
+		t.Errorf("2026-10-15 commands = %v, want find=1 new=1 check=0 guide=0", got)
+	}
+	if got := findDay("2026-10-16"); got != [4]int{1, 0, 1, 2} {
+		t.Errorf("2026-10-16 commands = %v, want find=1 new=0 check=1 guide=2", got)
+	}
+	if got := findHost("test-mac"); got != [4]int{2, 0, 0, 2} {
+		t.Errorf("test-mac commands = %v, want find=2 new=0 check=0 guide=2", got)
+	}
+	if got := findHost("alpha-host"); got != [4]int{0, 1, 1, 0} {
+		t.Errorf("alpha-host commands = %v, want find=0 new=1 check=1 guide=0", got)
+	}
+	if got := findHarness("claude"); got != [4]int{1, 1, 1, 1} {
+		t.Errorf("Claude commands = %v, want one of each", got)
+	}
+	if got := findHarness("codex"); got != [4]int{1, 0, 0, 1} {
+		t.Errorf("Codex commands = %v, want find=1 new=0 check=0 guide=1", got)
+	}
+
+	textCode, text, textStderr := f.run(t, "--transcripts", f.projects, "--since", "14d")
+	if textCode != cli.ExitOK {
+		t.Fatalf("text exit %d, stderr: %s", textCode, textStderr)
+	}
+	for _, want := range []string{"day 2026-10-15", "host alpha-host", "harness codex", "find=1 new=0 check=0 guide=1"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text report missing %q", want)
+		}
+	}
+	if strings.Contains(text, "agent-dry find codex") {
+		t.Error("text report leaked command text")
+	}
+}
+
+func copyFile(src, dst string) error {
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, raw, 0o644)
+}

@@ -59,15 +59,21 @@ type collector struct {
 	baoLogins                          int
 	baoSess                            map[string]bool
 	baoRun                             int
+	commandsByDay                      map[string]commandCounts
+	commandsByHost                     map[string]commandCounts
+	commandsByHarness                  map[string]commandCounts
 }
 
 func newCollector(tools []*manifest.Tool, hosts map[string]paths.Host, warn func(string, ...any)) *collector {
 	c := &collector{
-		seen:     map[string]bool{},
-		sessions: map[string]*sessionState{},
-		pending:  map[string]pendingCall{},
-		sshSess:  map[string]bool{},
-		baoSess:  map[string]bool{},
+		seen:              map[string]bool{},
+		sessions:          map[string]*sessionState{},
+		pending:           map[string]pendingCall{},
+		sshSess:           map[string]bool{},
+		baoSess:           map[string]bool{},
+		commandsByDay:     map[string]commandCounts{},
+		commandsByHost:    map[string]commandCounts{},
+		commandsByHarness: map[string]commandCounts{},
 	}
 	for _, t := range tools {
 		ts := &toolStat{tool: t, invoke: invokeRe(t.Name), inlineSess: map[string]bool{}, invokedSess: map[string]bool{}, okSess: map[string]bool{}}
@@ -129,6 +135,7 @@ func (c *collector) add(session string, ev event) {
 	}
 	c.bashCommands++
 	cmd := ev.cmd
+	c.countCommandUsage(ev, cmd)
 
 	if findRe.MatchString(cmd) {
 		c.findCommands++
@@ -224,4 +231,61 @@ func (c *collector) result(r result) {
 // endFile drops invocations whose result never appeared; they count as invoked, not as successful.
 func (c *collector) endFile() {
 	clear(c.pending)
+}
+
+type commandCounts struct {
+	Find  int `json:"find"`
+	New   int `json:"new"`
+	Check int `json:"check"`
+	Guide int `json:"guide"`
+}
+
+func (c *collector) countCommandUsage(ev event, cmd string) {
+	day := "unknown"
+	if !ev.at.IsZero() {
+		day = ev.at.Format("2006-01-02")
+	}
+	host := ev.host
+	if host == "" {
+		host = "unknown"
+	}
+	harness := ev.harness
+	if harness == "" {
+		harness = "unknown"
+	}
+	for name, re := range commandUsageRe {
+		count := len(re.FindAllStringIndex(cmd, -1))
+		if count == 0 {
+			continue
+		}
+		c.commandsByDay[day] = addCommandCount(c.commandsByDay[day], name, count)
+		c.commandsByHost[host] = addCommandCount(c.commandsByHost[host], name, count)
+		c.commandsByHarness[harness] = addCommandCount(c.commandsByHarness[harness], name, count)
+	}
+}
+
+func addCommandCount(counts commandCounts, name commandName, amount int) commandCounts {
+	switch name {
+	case commandFind:
+		counts.Find += amount
+	case commandNew:
+		counts.New += amount
+	case commandCheck:
+		counts.Check += amount
+	case commandGuide:
+		counts.Guide += amount
+	}
+	return counts
+}
+
+func (c *collector) commandHost(cmd, localHost string) string {
+	if !hostRunRe.MatchString(cmd) && !sshRe.MatchString(cmd) {
+		return localHost
+	}
+	for _, h := range c.hosts {
+		if h.re.MatchString(cmd) {
+			return h.name
+		}
+	}
+	return "unknown"
 }

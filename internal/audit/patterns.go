@@ -82,3 +82,24 @@ func redactToken(t string) string {
 	}
 	return t
 }
+
+// commandName is one CLI subcommand included in the usage report.
+type commandName string
+
+const (
+	commandFind  commandName = "find"
+	commandNew   commandName = "new"
+	commandCheck commandName = "check"
+	commandGuide commandName = "guide"
+)
+
+var commandUsageRe = map[commandName]*regexp.Regexp{
+	commandFind:  findRe,
+	commandNew:   agentDryCommandRe(commandNew),
+	commandCheck: agentDryCommandRe(commandCheck),
+	commandGuide: agentDryCommandRe(commandGuide),
+}
+
+func agentDryCommandRe(name commandName) *regexp.Regexp {
+	return regexp.MustCompile(pathStart + `agent-dry\s+` + regexp.QuoteMeta(string(name)) + argEnd)
+}

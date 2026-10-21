@@ -1,0 +1,4 @@
+{"type":"assistant","timestamp":"2026-10-15T10:15:00Z","message":{"content":[{"type":"tool_use","id":"usage-c1","name":"Bash","input":{"command":"agent-dry find command-patterns"}}]}}
+{"type":"assistant","timestamp":"2026-10-15T11:15:00Z","message":{"content":[{"type":"tool_use","id":"usage-c2","name":"Bash","input":{"command":"host-run alpha-host -- agent-dry new sample"}}]}}
+{"type":"assistant","timestamp":"2026-10-16T10:15:00Z","message":{"content":[{"type":"tool_use","id":"usage-c3","name":"Bash","input":{"command":"host-run alpha-host -- agent-dry check --all"}}]}}
+{"type":"assistant","timestamp":"2026-10-16T11:15:00Z","message":{"content":[{"type":"tool_use","id":"usage-c4","name":"Bash","input":{"command":"agent-dry guide reuse"}}]}}

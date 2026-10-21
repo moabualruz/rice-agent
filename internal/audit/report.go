@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -32,29 +33,31 @@ var (
 	copyBaselines   = map[string]string{"check-no-dashes": "10 copies, 5 variants"}
 )
 
-// Text caps keep the table under 40 lines.
+// Text caps bound each metric section in long audit reports.
 const (
 	maxInlineRows = 8
 	maxCopyRows   = 6
 	maxHostRows   = 3
 	maxNames      = 6
 	maxMissText   = 3
+	maxUsageRows  = 8
 )
 
 type report struct {
-	Schema      string         `json:"schema"`
-	Window      windowInfo     `json:"window"`
-	Transcripts transcriptInfo `json:"transcripts"`
-	LookupFirst lookupMetric   `json:"lookup_first"`
-	Inline      []inlineMetric `json:"inline"`
-	PR          prMetric       `json:"pr_lifecycle"`
-	SSH         sshMetric      `json:"ssh"`
-	OpenBao     baoMetric      `json:"openbao"`
-	Copies      *copyCensus    `json:"copies,omitempty"`
-	Hygiene     *hygiene       `json:"hygiene,omitempty"`
-	Misses      missSummary    `json:"misses"`
-	Tools       int            `json:"tools_loaded"`
-	Warnings    int            `json:"warnings"`
+	Schema       string         `json:"schema"`
+	Window       windowInfo     `json:"window"`
+	Transcripts  transcriptInfo `json:"transcripts"`
+	CommandUsage commandUsage   `json:"command_usage"`
+	LookupFirst  lookupMetric   `json:"lookup_first"`
+	Inline       []inlineMetric `json:"inline"`
+	PR           prMetric       `json:"pr_lifecycle"`
+	SSH          sshMetric      `json:"ssh"`
+	OpenBao      baoMetric      `json:"openbao"`
+	Copies       *copyCensus    `json:"copies,omitempty"`
+	Hygiene      *hygiene       `json:"hygiene,omitempty"`
+	Misses       missSummary    `json:"misses"`
+	Tools        int            `json:"tools_loaded"`
+	Warnings     int            `json:"warnings"`
 }
 
 type windowInfo struct {
@@ -73,6 +76,27 @@ type transcriptInfo struct {
 	ToolUses     int `json:"tool_uses"`
 	BashCommands int `json:"bash_commands"`
 	DuplicateIDs int `json:"duplicate_tool_use_ids"`
+}
+
+type commandUsage struct {
+	ByDay     []commandUsageDay     `json:"by_day"`
+	ByHost    []commandUsageHost    `json:"by_host"`
+	ByHarness []commandUsageHarness `json:"by_harness"`
+}
+
+type commandUsageDay struct {
+	Day string `json:"day"`
+	commandCounts
+}
+
+type commandUsageHost struct {
+	Host string `json:"host"`
+	commandCounts
+}
+
+type commandUsageHarness struct {
+	Harness string `json:"harness"`
+	commandCounts
 }
 
 type lookupMetric struct {
@@ -152,6 +176,11 @@ func build(c *collector, tools []*manifest.Tool, info transcriptInfo, now time.T
 	r.Transcripts.ToolUses = c.toolUses
 	r.Transcripts.BashCommands = c.bashCommands
 	r.Transcripts.DuplicateIDs = c.duplicates
+	r.CommandUsage = commandUsage{
+		ByDay:     commandUsageDays(c.commandsByDay),
+		ByHost:    commandUsageHosts(c.commandsByHost),
+		ByHarness: commandUsageHarnesses(c.commandsByHarness),
+	}
 
 	r.LookupFirst = lookupMetric{FindCommands: c.findCommands, Baseline: baseLookup, Target: tgtLookup}
 	r.PR = prMetric{LifecycleAll: c.lifecycleTotal, Baseline: baseMerge, Target: tgtMerge}
@@ -213,6 +242,42 @@ func build(c *collector, tools []*manifest.Tool, info transcriptInfo, now time.T
 		r.Hygiene = h
 	}
 	return r
+}
+
+func commandUsageDays(counts map[string]commandCounts) []commandUsageDay {
+	keys := sortedCountKeys(counts)
+	rows := make([]commandUsageDay, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, commandUsageDay{Day: key, commandCounts: counts[key]})
+	}
+	return rows
+}
+
+func commandUsageHosts(counts map[string]commandCounts) []commandUsageHost {
+	keys := sortedCountKeys(counts)
+	rows := make([]commandUsageHost, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, commandUsageHost{Host: key, commandCounts: counts[key]})
+	}
+	return rows
+}
+
+func commandUsageHarnesses(counts map[string]commandCounts) []commandUsageHarness {
+	keys := sortedCountKeys(counts)
+	rows := make([]commandUsageHarness, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, commandUsageHarness{Harness: key, commandCounts: counts[key]})
+	}
+	return rows
+}
+
+func sortedCountKeys(counts map[string]commandCounts) []string {
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeJSON(w io.Writer, r report) error {
@@ -346,6 +411,28 @@ func writeText(w io.Writer, r report) error {
 		}
 		row("8 find misses", v, "", "")
 	}
+	row("9 agent-dry commands", "find/new/check/guide", "", "")
+	for i, usage := range r.CommandUsage.ByDay {
+		if i == maxUsageRows {
+			row("  ...", fmt.Sprintf("+%d days (see --json)", len(r.CommandUsage.ByDay)-maxUsageRows), "", "")
+			break
+		}
+		row("  day "+usage.Day, commandCountsText(usage.commandCounts), "", "")
+	}
+	for i, usage := range r.CommandUsage.ByHost {
+		if i == maxUsageRows {
+			row("  ...", fmt.Sprintf("+%d hosts (see --json)", len(r.CommandUsage.ByHost)-maxUsageRows), "", "")
+			break
+		}
+		row("  host "+usage.Host, commandCountsText(usage.commandCounts), "", "")
+	}
+	for i, usage := range r.CommandUsage.ByHarness {
+		if i == maxUsageRows {
+			row("  ...", fmt.Sprintf("+%d harnesses (see --json)", len(r.CommandUsage.ByHarness)-maxUsageRows), "", "")
+			break
+		}
+		row("  harness "+usage.Harness, commandCountsText(usage.commandCounts), "", "")
+	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
@@ -358,6 +445,10 @@ func writeText(w io.Writer, r report) error {
 		fmt.Fprintf(w, "%d warnings on stderr\n", r.Warnings)
 	}
 	return nil
+}
+
+func commandCountsText(c commandCounts) string {
+	return fmt.Sprintf("find=%d new=%d check=%d guide=%d", c.Find, c.New, c.Check, c.Guide)
 }
 
 func dash(s string) string {
