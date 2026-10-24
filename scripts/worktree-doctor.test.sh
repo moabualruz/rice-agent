@@ -9,7 +9,7 @@ nvm_dir="$root/nvm"
 mkdir -p "$fake_bin" "$nvm_dir/versions/node/v24/bin"
 for command in go just jq shellcheck gitleaks; do ln -s /usr/bin/true "$fake_bin/$command"; done
 ln -s /usr/bin/true "$nvm_dir/versions/node/v24/bin/node"
-printf 'nvm() { return 0; }\n' >"$nvm_dir/nvm.sh"
+printf 'nvm() { PATH="$NVM_DIR/versions/node/v24/bin:$PATH"; export PATH; return 0; }\n' >"$nvm_dir/nvm.sh"
 
 make_checkout() {
   local checkout=$1
