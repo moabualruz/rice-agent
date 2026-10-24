@@ -14,9 +14,13 @@ build:
 vet:
     env -u GOFLAGS go vet ./...
 
+worktree-doctor:
+    bash scripts/worktree-doctor.sh
+
 test:
     env -u GOFLAGS go test ./...
     bash scripts/deploy.test.sh
+    bash scripts/worktree-doctor.test.sh
 
 # Release TAG to this machine and every hosts.<name>.install host (see scripts/deploy.sh --help).
 deploy TAG *ARGS:
@@ -27,4 +31,4 @@ tools: build
     bin/agent-dry check --all
 
 # Everything CI runs.
-ci: vet test build tools dashes secrets
+ci: worktree-doctor vet test build tools dashes secrets

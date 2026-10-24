@@ -87,4 +87,7 @@ jobs:
 
       - name: Script tests
         shell: bash
-        run: bash scripts/deploy.test.sh
+        run: |
+          set -euo pipefail
+          bash scripts/deploy.test.sh
+          bash scripts/worktree-doctor.test.sh
