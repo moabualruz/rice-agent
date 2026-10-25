@@ -87,6 +87,7 @@ func TestCompletionBlobScanBlocksPlanAndArchive(t *testing.T) {
 }
 
 func TestCompletionRestoreCASIdempotentAndRejectsUnsafeFiles(t *testing.T) {
+	isolateOpenScan(t)
 	for _, kind := range []string{"matching", "different", "symlink", "parent-symlink", "missing"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := testConfig(t.TempDir())
@@ -136,6 +137,7 @@ func TestCompletionRestoreCASIdempotentAndRejectsUnsafeFiles(t *testing.T) {
 }
 
 func TestCompletionCreationRejectsSymlinkParents(t *testing.T) {
+	isolateOpenScan(t)
 	for _, kind := range []string{"scratch", "evidence", "ledger", "blob", "receipt", "close"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := testConfig(t.TempDir())

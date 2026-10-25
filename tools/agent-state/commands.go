@@ -537,11 +537,12 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		if len(o.pos) != 1 || strings.TrimSpace(o.values["reason"]) == "" {
 			return usageError(stderr, "pin add <path> --reason <text>")
 		}
-		p, err := canonicalPath(o.pos[0])
-		if err != nil {
-			return usageError(stderr, err.Error())
-		}
-		return withIndexLock(cfg, func(idx *registryIndex) int {
+		var p string
+		return withIndexTransaction(cfg, stderr, func(idx *registryIndex, tx *stateTransaction) int {
+			p, err = canonicalPath(o.pos[0])
+			if err != nil {
+				return exitBlocked
+			}
 			if hasPin(idx.Pins, p) {
 				fmt.Fprintln(stdout, "pin already exists")
 				return exitOK
@@ -555,7 +556,7 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 			}
 			idx.RemovedConfiguredPins = removed
 			idx.Pins = append(idx.Pins, pin{Path: p, Reason: o.values["reason"], Added: time.Now().UTC().Format(time.RFC3339)})
-			if err := saveIndex(cfg, *idx); err != nil {
+			if err := tx.saveIndex(*idx); err != nil {
 				fmt.Fprintf(stderr, "%s: save pin: %v\n", prog, err)
 				return exitEnv
 			}
@@ -571,11 +572,12 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		if len(o.pos) != 1 {
 			return usageError(stderr, "pin rm <path>")
 		}
-		p, err := canonicalPath(o.pos[0])
-		if err != nil {
-			return usageError(stderr, err.Error())
-		}
-		return withIndexLock(cfg, func(idx *registryIndex) int {
+		var p string
+		return withIndexTransaction(cfg, stderr, func(idx *registryIndex, tx *stateTransaction) int {
+			p, err = canonicalPath(o.pos[0])
+			if err != nil {
+				return exitBlocked
+			}
 			if !hasPin(idx.Pins, p) {
 				fmt.Fprintln(stderr, "agent-state: pin not found")
 				return exitNegative
@@ -597,7 +599,7 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 					break
 				}
 			}
-			if err := saveIndex(cfg, *idx); err != nil {
+			if err := tx.saveIndex(*idx); err != nil {
 				return exitEnv
 			}
 			fmt.Fprintf(stdout, "unpinned %s\n", p)
@@ -702,14 +704,23 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		if !inside(cfg.Root, path) {
 			return exitUsage
 		}
-		return withIndexLock(cfg, func(idx *registryIndex) int {
-			if err := mkdirState(cfg.Root, path); err != nil {
+		return withIndexTransaction(cfg, stderr, func(idx *registryIndex, tx *stateTransaction) int {
+			if err := validateExistingPath(cfg.Root, path); err != nil {
+				return exitBlocked
+			}
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				return exitBlocked
+			}
+			if len(protectionCheck(cfg, *idx, path)) != 0 {
+				return exitBlocked
+			}
+			if err := tx.mkdir(path); err != nil {
 				return exitEnv
 			}
 			now := time.Now().UTC()
 			l := lease{ID: id, Project: o.pos[0], Path: path, CreatedAt: now.Format(time.RFC3339), RenewedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(ttl).Format(time.RFC3339)}
 			idx.Leases = append(idx.Leases, l)
-			if err := saveIndex(cfg, *idx); err != nil {
+			if err := tx.saveIndex(*idx); err != nil {
 				return exitEnv
 			}
 			fmt.Fprintln(stdout, path)
@@ -730,7 +741,7 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		if !validateName(id) {
 			return usageError(stderr, "invalid lease id")
 		}
-		return withIndexLock(cfg, func(idx *registryIndex) int {
+		return withIndexTransaction(cfg, stderr, func(idx *registryIndex, tx *stateTransaction) int {
 			for i := range idx.Leases {
 				l := &idx.Leases[i]
 				if l.ID != id {
@@ -739,6 +750,9 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 				if l.ReleasedAt != "" {
 					fmt.Fprintln(stderr, "agent-state: lease already released")
 					return exitNegative
+				}
+				if len(protectionCheck(cfg, *idx, l.Path)) != 0 {
+					return exitBlocked
 				}
 				now := time.Now().UTC()
 				if args[0] == "release" {
@@ -754,7 +768,7 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 					l.RenewedAt = now.Format(time.RFC3339)
 					l.ExpiresAt = now.Add(ttl).Format(time.RFC3339)
 				}
-				if err := saveIndex(cfg, *idx); err != nil {
+				if err := tx.saveIndex(*idx); err != nil {
 					return exitEnv
 				}
 				fmt.Fprintf(stdout, "%s %s\n", args[0], id)
@@ -776,12 +790,12 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		return usageError(stderr, "evidence requires new, put or close")
 	}
 	// Manifest read-modify-write operations must share the staging lock.
-	return withIndexLock(cfg, func(_ *registryIndex) int {
-		return mutateEvidence(cfg, args, stdout, stderr)
+	return withIndexTransaction(cfg, stderr, func(idx *registryIndex, tx *stateTransaction) int {
+		return mutateEvidence(cfg, *idx, tx, args, stdout, stderr)
 	})
 }
 
-func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
+func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "new":
 		o, err := parseOptions(args[1:], nil, []string{"goal", "criterion", "source"})
@@ -813,7 +827,16 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 		path := filepath.Join(project, "evidence", id)
 		now := time.Now().UTC().Format(time.RFC3339)
 		m := evidenceManifest{Schema: evidenceSchema, ID: id, Project: o.pos[0], GoalID: o.values["goal"], Criterion: o.values["criterion"], Status: "open", CreatedAt: now, LastUsedAt: now, Sources: sources}
-		if err := mkdirState(cfg.Root, path); err != nil {
+		if len(protectionCheck(cfg, idx, path)) != 0 {
+			return exitBlocked
+		}
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			return exitBlocked
+		}
+		if err := tx.mkdir(path); err != nil {
+			return exitEnv
+		}
+		if err := tx.track(filepath.Join(path, "manifest.json")); err != nil {
 			return exitEnv
 		}
 		if err := writeJSONAtomic(filepath.Join(path, "manifest.json"), m, 0o600); err != nil {
@@ -846,6 +869,12 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "agent-state: bundle is not an open evidence bundle")
 			return exitNegative
 		}
+		if len(protectionCheck(cfg, idx, bundle)) != 0 {
+			return exitBlocked
+		}
+		if err := tx.track(filepath.Join(bundle, "manifest.json")); err != nil {
+			return exitEnv
+		}
 		src, err := os.Open(o.pos[1])
 		if err != nil {
 			return exitNegative
@@ -873,12 +902,21 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 			if err := validateExistingPath(cfg.Root, cas); err != nil {
 				return exitBlocked
 			}
-			if _, err := os.Stat(cas); errors.Is(err, os.ErrNotExist) {
-				if err := mkdirState(cfg.Root, filepath.Dir(cas)); err != nil {
+			if len(protectionCheck(cfg, idx, cas)) != 0 || len(protectionCheck(cfg, idx, bundle)) != 0 {
+				return exitBlocked
+			}
+			if _, err := os.Lstat(cas); errors.Is(err, os.ErrNotExist) {
+				if err := tx.track(cas); err != nil {
+					return exitEnv
+				}
+				if err := tx.mkdir(filepath.Dir(cas)); err != nil {
 					return exitEnv
 				}
 				if err := copyFile(cas, o.pos[1], 0o600); err != nil {
 					return exitEnv
+				}
+				if copied, bytes, err := hashFile(cas); err != nil || copied != sum || bytes != n {
+					return exitBlocked
 				}
 			} else if err != nil {
 				return exitEnv
@@ -895,9 +933,6 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 			m.Blobs = append(m.Blobs, fileRecord{Path: filepath.ToSlash(rel), SHA256: sum, Bytes: n, Role: role})
 		} else {
 			dir := filepath.Join(bundle, allowed[role])
-			if err := mkdirState(cfg.Root, dir); err != nil {
-				return exitEnv
-			}
 			name := filepath.Base(o.pos[1])
 			if !validateName(name) {
 				name = "evidence-file"
@@ -906,8 +941,20 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 			if !inside(bundle, dest) {
 				return exitUsage
 			}
-			if _, err := os.Stat(dest); err == nil {
+			if err := validateExistingPath(cfg.Root, dest); err != nil {
+				return exitBlocked
+			}
+			if _, err := os.Lstat(dest); !errors.Is(err, os.ErrNotExist) {
 				return usageError(stderr, "file name already exists in bundle")
+			}
+			if len(protectionCheck(cfg, idx, bundle)) != 0 {
+				return exitBlocked
+			}
+			if err := tx.track(dest); err != nil {
+				return exitEnv
+			}
+			if err := tx.mkdir(dir); err != nil {
+				return exitEnv
 			}
 			if err := copyFile(dest, o.pos[1], 0o600); err != nil {
 				return exitEnv
@@ -916,9 +963,15 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return exitEnv
 			}
+			if n > 25*1024*1024 || role == "screenshot" && n > 1024*1024 {
+				return exitBlocked
+			}
 			m.Files = append(m.Files, fileRecord{Path: filepath.ToSlash(filepath.Join(allowed[role], name)), SHA256: sum, Bytes: n, Role: role})
 		}
 		setUsed(&m)
+		if len(protectionCheck(cfg, idx, bundle)) != 0 {
+			return exitBlocked
+		}
 		if err := writeJSONAtomic(filepath.Join(bundle, "manifest.json"), m, 0o600); err != nil {
 			return exitEnv
 		}
@@ -947,6 +1000,9 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 		if err != nil || m.Status != "open" {
 			return exitNegative
 		}
+		if len(protectionCheck(cfg, idx, bundle)) != 0 {
+			return exitBlocked
+		}
 		if err := sealEvidenceFiles(bundle, &m); err != nil {
 			fmt.Fprintln(stderr, "agent-state: evidence contains unreadable or unsafe content")
 			return exitBlocked
@@ -956,6 +1012,12 @@ func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 		m.Result = result
 		m.ClosedAt = now
 		m.LastUsedAt = now
+		if len(protectionCheck(cfg, idx, bundle)) != 0 {
+			return exitBlocked
+		}
+		if err := tx.track(filepath.Join(bundle, "manifest.json")); err != nil {
+			return exitEnv
+		}
 		if err := writeJSONAtomic(filepath.Join(bundle, "manifest.json"), m, 0o600); err != nil {
 			return exitEnv
 		}
@@ -1081,21 +1143,23 @@ func gcCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if o.bools["apply"] {
 		return applyGC(cfg, o.values["plan"], planDirectory, stdout, stderr)
 	}
-	plan, err := buildPlan(cfg, class)
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: gc plan: %v\n", prog, err)
-		return exitEnv
-	}
-	if err := persistPlan(plan, planDirectory); err != nil {
-		fmt.Fprintf(stderr, "%s: save plan: %v\n", prog, err)
-		return exitEnv
-	}
-	path := filepath.Join(planDirectory, plan.ID+".json")
-	fmt.Fprintf(stdout, "plan_id=%s scratch_expirable=%d/%s GiB archive_then_stub=%d/%s GiB blocked=%d blocked_bytes=%s GiB path=%s\n", plan.ID, countPlanClass(plan, "scratch", "delete_scratch"), bytesGiB(plan.ScratchBytes), countPlanClass(plan, "evidence", "archive_then_stub"), bytesGiB(plan.EvidenceBytes), len(plan.Blocked), bytesGiB(plan.BlockedBytes), path)
-	for _, reason := range blockedReasonCounts(plan.Blocked) {
-		fmt.Fprintf(stdout, "blocked_reason=%s count=%d\n", reason.Name, reason.Count)
-	}
-	return exitOK
+	return withIndexLock(cfg, func(idx *registryIndex) int {
+		plan, err := buildPlanLocked(cfg, class, *idx)
+		if err != nil {
+			fmt.Fprintln(stderr, "agent-state: cannot build GC plan")
+			return exitEnv
+		}
+		if err := persistPlan(plan, planDirectory); err != nil {
+			fmt.Fprintln(stderr, "agent-state: cannot save GC plan")
+			return exitEnv
+		}
+		path := filepath.Join(planDirectory, plan.ID+".json")
+		fmt.Fprintf(stdout, "plan_id=%s scratch_expirable=%d/%s GiB archive_then_stub=%d/%s GiB blocked=%d blocked_bytes=%s GiB path=%s\n", plan.ID, countPlanClass(plan, "scratch", "delete_scratch"), bytesGiB(plan.ScratchBytes), countPlanClass(plan, "evidence", "archive_then_stub"), bytesGiB(plan.EvidenceBytes), len(plan.Blocked), bytesGiB(plan.BlockedBytes), path)
+		for _, reason := range blockedReasonCounts(plan.Blocked) {
+			fmt.Fprintf(stdout, "blocked_reason=%s count=%d\n", reason.Name, reason.Count)
+		}
+		return exitOK
+	})
 }
 
 func resolvePlanDirectory(cfg config, requested string) (string, error) {
@@ -1175,6 +1239,19 @@ func blockedReasonCounts(entries []planEntry) []blockedReasonCount {
 }
 
 func buildPlan(cfg config, class string) (gcPlan, error) {
+	var plan gcPlan
+	var planErr error
+	code := withIndexLock(cfg, func(idx *registryIndex) int {
+		plan, planErr = buildPlanLocked(cfg, class, *idx)
+		return exitOK
+	})
+	if code != exitOK {
+		return plan, errors.New("registry lock or index unavailable")
+	}
+	return plan, planErr
+}
+
+func buildPlanLocked(cfg config, class string, idx registryIndex) (gcPlan, error) {
 	plan := gcPlan{Schema: planSchema, Root: cfg.Root, CreatedAt: time.Now().UTC().Format(time.RFC3339), Policy: planPolicy{ScratchTTL: cfg.ScratchTTL, EvidenceGrace: cfg.EvidenceGrace, ArchiveRetentionMonths: cfg.Archive.RetentionMonths, ActiveLedgerDays: cfg.ActiveLedgerDays}}
 	if _, err := safeRootDevice(cfg.Root); err != nil {
 		return plan, err
@@ -1184,19 +1261,6 @@ func buildPlan(cfg config, class string) (gcPlan, error) {
 		return plan, err
 	}
 	plan.ID = id
-	idx, err := loadIndex(cfg)
-	if err != nil {
-		return plan, err
-	}
-	ledgerRefs, err := collectActiveLedgerRefs(cfg)
-	if err != nil {
-		plan.Blocked = append(plan.Blocked, planEntry{Path: cfg.Root, Class: "system", Action: "gc", Reasons: []string{"ledger_scan_unavailable"}})
-		if sealErr := sealPlan(&plan); sealErr != nil {
-			return plan, sealErr
-		}
-		return plan, nil
-	}
-	open, openErr := safetyOpenPaths()
 	if class == "" || class == "scratch" {
 		for _, item := range idx.Leases {
 			if item.CollectedAt != "" {
@@ -1223,7 +1287,7 @@ func buildPlan(cfg config, class string) (gcPlan, error) {
 			if measureErr != nil {
 				entry.Reasons = append(entry.Reasons, "unreadable_content")
 			}
-			entry.Reasons = append(entry.Reasons, safetyReasonsWithRefs(cfg, idx, item.Path, open, openErr, ledgerRefs)...)
+			entry.Reasons = append(entry.Reasons, protectionCheck(cfg, idx, item.Path)...)
 			if len(entry.Reasons) == 0 {
 				fingerprint, fingerprintErr := treeFingerprint(item.Path)
 				if fingerprintErr != nil {
@@ -1297,7 +1361,7 @@ func buildPlan(cfg config, class string) (gcPlan, error) {
 						entry.ManifestSHA256 = manifestHash
 					}
 				}
-				entry.Reasons = append(entry.Reasons, safetyReasonsWithRefs(cfg, idx, bundle, open, openErr, ledgerRefs)...)
+				entry.Reasons = append(entry.Reasons, protectionCheck(cfg, idx, bundle)...)
 				entry.Reasons = unique(entry.Reasons)
 				if len(entry.Reasons) != 0 {
 					plan.Blocked = append(plan.Blocked, entry)
@@ -1317,17 +1381,36 @@ func buildPlan(cfg config, class string) (gcPlan, error) {
 	return plan, nil
 }
 
-func persistPlan(plan gcPlan, directory string) error {
+func persistPlan(plan gcPlan, directory string) (planErr error) {
 	if err := validatePlan(plan); err != nil {
 		return err
 	}
 	if err := validatePlanDirectory(config{Root: plan.Root}, directory); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	path := filepath.Join(directory, plan.ID+".json")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return errors.New("plan destination is unsafe")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return writeJSONAtomic(filepath.Join(directory, plan.ID+".json"), plan, 0o600)
+	tx, _ := beginStateMutation(config{Root: directory})
+	defer func() {
+		if planErr == nil {
+			tx.commit()
+		} else {
+			planErr = errors.Join(planErr, tx.rollback())
+		}
+	}()
+	if err := tx.mkdir(directory); err != nil {
+		return err
+	}
+	if err := tx.track(path); err != nil {
+		return err
+	}
+	return writeJSONAtomic(path, plan, 0o600)
 }
 
 func loadPlan(cfg config, id, directory string) (gcPlan, error) {
@@ -1364,108 +1447,104 @@ func loadPlan(cfg config, id, directory string) (gcPlan, error) {
 }
 
 func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int {
-	plan, err := loadPlan(cfg, id, planDirectory)
-	if err != nil || plan.Action != "" {
-		fmt.Fprintf(stderr, "%s: cannot load a matching GC plan\n", prog)
-		return exitBlocked
-	}
-	var items []planEntry
-	for _, entry := range plan.Candidates {
-		if entry.Class == "scratch" && entry.Action == "delete_scratch" {
-			items = append(items, entry)
-		}
-	}
-	if len(items) == 0 {
-		fmt.Fprintln(stderr, "agent-state: plan has no scratch deletion candidates; evidence requires archive --apply --plan")
-		return exitBlocked
-	}
-	return withIndexLock(cfg, func(idx *registryIndex) int {
-		ledgerRefs, err := collectActiveLedgerRefs(cfg)
-		if err != nil {
-			fmt.Fprintln(stderr, "agent-state: ledger safety scan is unavailable")
+	return withIndexLock(cfg, func(idx *registryIndex) (code int) {
+		plan, err := loadPlan(cfg, id, planDirectory)
+		if err != nil || plan.Action != "" {
 			return exitBlocked
 		}
-		open, openErr := safetyOpenPaths()
-		for _, entry := range items {
-			if !inside(cfg.Root, entry.Path) {
+		var items []planEntry
+		for _, entry := range plan.Candidates {
+			if entry.Class == "scratch" && entry.Action == "delete_scratch" {
+				items = append(items, entry)
+			}
+		}
+		if len(items) == 0 {
+			return exitBlocked
+		}
+		trash := rootPath(cfg, "_registry", "trash", id)
+		receiptPath := rootPath(cfg, "_registry", "receipts", id+"-gc.json")
+		for _, path := range []string{receiptPath, indexPath(cfg)} {
+			if err := validateExistingPath(cfg.Root, path); err != nil {
 				return exitBlocked
 			}
-			var leaseFound bool
+		}
+		if _, err := os.Lstat(receiptPath); !errors.Is(err, os.ErrNotExist) {
+			return exitBlocked
+		}
+		for _, entry := range items {
+			leaseFound := false
 			for _, lease := range idx.Leases {
 				if lease.Path != entry.Path || lease.CollectedAt != "" {
 					continue
 				}
 				leaseFound = true
-				expires, parseErr := time.Parse(time.RFC3339, lease.ExpiresAt)
-				if parseErr != nil || time.Now().Before(expires) {
+				expires, err := time.Parse(time.RFC3339, lease.ExpiresAt)
+				if err != nil || time.Now().Before(expires) {
 					return exitBlocked
 				}
 			}
-			if !leaseFound {
+			if !leaseFound || len(protectionCheck(cfg, *idx, entry.Path)) != 0 {
 				return exitBlocked
 			}
 			bytes, err := measureTreeWithin(entry.Path, cfg.Root)
-			if err != nil || bytes != entry.Bytes {
-				fmt.Fprintln(stderr, "agent-state: scratch changed since plan creation")
-				return exitBlocked
-			}
-			if entry.TreeSHA256 == "" {
-				return exitBlocked
-			}
 			fingerprint, hashErr := treeFingerprint(entry.Path)
-			if hashErr != nil || fingerprint != entry.TreeSHA256 {
-				fmt.Fprintln(stderr, "agent-state: scratch changed since plan creation")
+			if err != nil || bytes != entry.Bytes || entry.TreeSHA256 == "" || hashErr != nil || fingerprint != entry.TreeSHA256 {
 				return exitBlocked
 			}
-			if reasons := safetyReasonsWithRefs(cfg, *idx, entry.Path, open, openErr, ledgerRefs); len(reasons) != 0 {
-				fmt.Fprintf(stderr, "agent-state: plan is now blocked by %s\n", strings.Join(reasons, ","))
+			rel, err := filepath.Rel(cfg.Root, entry.Path)
+			if err != nil {
+				return exitBlocked
+			}
+			dst := filepath.Join(trash, rel)
+			if err := validateExistingPath(cfg.Root, dst); err != nil {
+				return exitBlocked
+			}
+			if _, err := os.Lstat(dst); !errors.Is(err, os.ErrNotExist) {
 				return exitBlocked
 			}
 		}
-		if err := validateExistingPath(cfg.Root, rootPath(cfg, "_registry", "receipts")); err != nil {
-			return exitBlocked
-		}
-		trash := rootPath(cfg, "_registry", "trash", id)
-		type movedPath struct {
-			source string
-			target string
-		}
+		tx, _ := beginStateMutation(cfg)
+		type movedPath struct{ source, target string }
 		var moved []movedPath
-		rollback := func() {
+		defer func() {
+			if code == exitOK {
+				tx.commit()
+				return
+			}
 			for i := len(moved) - 1; i >= 0; i-- {
-				_ = os.Rename(moved[i].target, moved[i].source)
+				if err := os.Rename(moved[i].target, moved[i].source); err != nil {
+					fmt.Fprintln(stderr, "agent-state: rollback could not restore scratch")
+					code = exitEnv
+				}
 			}
+			if err := tx.rollback(); err != nil {
+				fmt.Fprintln(stderr, "agent-state: rollback could not restore registry")
+				code = exitEnv
+			}
+		}()
+		if err := tx.track(indexPath(cfg)); err != nil {
+			return exitEnv
 		}
-		// Preflight every destination before moving any lease.
+		if err := tx.track(receiptPath); err != nil {
+			return exitEnv
+		}
 		for _, entry := range items {
+			if len(protectionCheck(cfg, *idx, entry.Path)) != 0 {
+				return exitBlocked
+			}
+			fingerprint, err := treeFingerprint(entry.Path)
+			if err != nil || fingerprint != entry.TreeSHA256 {
+				return exitBlocked
+			}
 			rel, _ := filepath.Rel(cfg.Root, entry.Path)
 			dst := filepath.Join(trash, rel)
-			if err := mkdirState(cfg.Root, filepath.Dir(dst)); err != nil {
-				return exitBlocked
-			}
-			if _, err := os.Lstat(dst); err == nil {
-				return exitBlocked
-			} else if !errors.Is(err, os.ErrNotExist) {
+			if err := tx.mkdir(filepath.Dir(dst)); err != nil {
 				return exitEnv
 			}
-		}
-		for _, entry := range items {
-			// Other candidates and repo checks may take time. Rebind content and
-			// external protections at each move, not just at batch preflight.
-			fingerprint, hashErr := treeFingerprint(entry.Path)
-			if hashErr != nil || fingerprint != entry.TreeSHA256 || len(currentProtectionReasons(cfg, *idx, entry.Path)) != 0 {
-				rollback()
-				fmt.Fprintln(stderr, "agent-state: scratch changed or became protected before staging")
-				return exitBlocked
-			}
-			rel, _ := filepath.Rel(cfg.Root, entry.Path)
-			dst := filepath.Join(trash, rel)
 			if err := os.Rename(entry.Path, dst); err != nil {
-				rollback()
-				fmt.Fprintln(stderr, "agent-state: move to trash failed")
 				return exitEnv
 			}
-			moved = append(moved, movedPath{source: entry.Path, target: dst})
+			moved = append(moved, movedPath{entry.Path, dst})
 			for i := range idx.Leases {
 				if idx.Leases[i].Path == entry.Path {
 					stamp := time.Now().UTC().Format(time.RFC3339)
@@ -1476,13 +1555,14 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 				}
 			}
 		}
-		if err := saveIndex(cfg, *idx); err != nil {
-			rollback()
+		if err := tx.mkdir(filepath.Dir(receiptPath)); err != nil {
 			return exitEnv
 		}
 		receipt := map[string]any{"plan_id": id, "action": "delete_scratch", "completed_at": time.Now().UTC().Format(time.RFC3339), "trash_path": trash, "items": items}
-		if err := writeJSONAtomic(rootPath(cfg, "_registry", "receipts", id+"-gc.json"), receipt, 0o600); err != nil {
-			fmt.Fprintln(stderr, "agent-state: scratch is in trash but the receipt could not be written")
+		if err := writeJSONAtomic(receiptPath, receipt, 0o600); err != nil {
+			return exitEnv
+		}
+		if err := tx.saveIndex(*idx); err != nil {
 			return exitEnv
 		}
 		fmt.Fprintf(stdout, "staged %d scratch path(s) in registry trash; purge requires a separate plan\n", len(items))

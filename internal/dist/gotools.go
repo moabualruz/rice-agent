@@ -68,6 +68,50 @@ func goToolDestinations(root, outputRoot, goos, goarch string) (map[string]strin
 	return destinations, nil
 }
 
+func validateGoToolSet(goTools []*manifest.Tool, outputRoot, platform, pathEnv string) (string, error) {
+	goBin, hasGo := lookPath("go", pathEnv)
+	for _, tool := range goTools {
+		target := goToolTarget(outputRoot, tool.Name, platform)
+		if err := rejectGoToolSymlinks(outputRoot, target); err != nil {
+			return "", err
+		}
+		info, err := os.Lstat(target)
+		if err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+			return "", fmt.Errorf("Go tool target %s is not a regular file", target)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		packaged := filepath.Join(tool.Dir, "bin", platform, tool.Name)
+		if err := rejectGoToolSymlinks(tool.Dir, packaged); err != nil {
+			return "", err
+		}
+		info, err = os.Lstat(packaged)
+		if err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+				return "", fmt.Errorf("packaged Go tool %s is not an executable regular file", tool.Name)
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if !hasGo {
+			return "", fmt.Errorf("Go tool %s has no compiler or verified packaged %s binary", tool.Name, platform)
+		}
+	}
+	return goBin, nil
+}
+
+func validateGoTools(root, outputRoot, goos, goarch, pathEnv string) error {
+	goTools, err := listedGoTools(root, goos+"-"+goarch)
+	if err != nil {
+		return err
+	}
+	_, err = validateGoToolSet(goTools, outputRoot, goos+"-"+goarch, pathEnv)
+	return err
+}
+
 // buildGoTools produces platform binaries outside the source tree for install and bundle.
 func buildGoTools(root, outputRoot, goos, goarch, pathEnv string) ([]goToolBinary, error) {
 	platform := goos + "-" + goarch
@@ -78,20 +122,11 @@ func buildGoTools(root, outputRoot, goos, goarch, pathEnv string) ([]goToolBinar
 	if len(goTools) == 0 {
 		return nil, nil
 	}
-	for _, tool := range goTools {
-		target := goToolTarget(outputRoot, tool.Name, platform)
-		if err := rejectGoToolSymlinks(outputRoot, target); err != nil {
-			return nil, err
-		}
-		info, err := os.Lstat(target)
-		if err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
-			return nil, fmt.Errorf("Go tool target %s is not a regular file", target)
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
+	goBin, err := validateGoToolSet(goTools, outputRoot, platform, pathEnv)
+	if err != nil {
+		return nil, err
 	}
-	goBin, hasGo := lookPath("go", pathEnv)
+	hasGo := goBin != ""
 	out := make([]goToolBinary, 0, len(goTools))
 	success := false
 	defer func() {

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/moabualruz/agent-dry/internal/fslock"
 )
 
 const indexSchema = "agent-state/index-v1"
@@ -307,34 +309,52 @@ func hasPin(pins []pin, path string) bool {
 	return false
 }
 
-func withIndexLock(cfg config, fn func(*registryIndex) int) int {
-	if err := validateExistingPath(cfg.Root, filepath.Dir(lockPath(cfg))); err != nil {
-		return exitBlocked
-	}
-	if err := mkdirState(cfg.Root, filepath.Dir(lockPath(cfg))); err != nil {
-		return exitEnv
-	}
-	f, err := os.OpenFile(lockPath(cfg), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return exitEnv
-	}
-	defer f.Close()
+func indexLockAnchor(cfg config) string {
+	anchor, _ := fslock.ExistingAnchor(cfg.Root)
+	return anchor
+}
+
+func flockIndex(f *os.File) error {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			break
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return err
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintln(os.Stderr, "agent-state: registry lock is busy")
-			return exitBlocked
+			return errors.New("registry lock is busy")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+func withIndexLock(cfg config, fn func(*registryIndex) int) int {
+	if err := validateExistingPath(cfg.Root, lockPath(cfg)); err != nil {
+		return exitBlocked
+	}
+	unlock, err := fslock.Lock([]string{cfg.Root}, 3*time.Second)
+	if err != nil {
+		return exitBlocked
+	}
+	defer unlock()
+	// Honor an already-existing lock file without creating one. This also lets
+	// an older writer finish before its registry is read.
+	legacy, err := os.OpenFile(lockPath(cfg), os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	if err == nil {
+		defer legacy.Close()
+		if err := flockIndex(legacy); err != nil {
+			return exitBlocked
+		}
+		defer syscall.Flock(int(legacy.Fd()), syscall.LOCK_UN)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return exitBlocked
+	}
 	idx, err := loadIndex(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-state: registry: %v\n", err)
+		fmt.Fprintln(os.Stderr, "agent-state: registry is invalid or unavailable")
 		return exitEnv
 	}
 	return fn(&idx)
@@ -351,6 +371,16 @@ func saveIndex(cfg config, idx registryIndex) error {
 }
 
 func writeJSONAtomic(path string, value any, mode fs.FileMode) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeStateBytes(path, append(data, '\n'), mode)
+}
+
+var writeStateBytes = writeBytesAtomic
+
+func writeBytesAtomic(path string, data []byte, mode fs.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -364,9 +394,7 @@ func writeJSONAtomic(path string, value any, mode fs.FileMode) error {
 		f.Close()
 		return err
 	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(value); err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
 	}
@@ -377,7 +405,14 @@ func writeJSONAtomic(path string, value any, mode fs.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
 }
 
 func newID(prefix string) (string, error) {

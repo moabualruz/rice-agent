@@ -81,7 +81,7 @@ func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string)
 	if uninstall {
 		stdin = strings.NewReader(remoteUninstallScript(installArgs))
 	} else {
-		root, err := paths.Root(env.Getenv)
+		root, err := distRoot(env.Getenv)
 		if err != nil {
 			return cli.Envf(env, "install: %v", err)
 		}

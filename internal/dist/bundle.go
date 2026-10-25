@@ -70,7 +70,7 @@ func runBundle(env *cli.Env) int {
 	if !regexp.MustCompile(`^[a-z0-9]+$`).MatchString(*goos) || !regexp.MustCompile(`^[a-z0-9]+$`).MatchString(*goarch) {
 		return cli.Usagef(env, "bundle: invalid --goos or --goarch")
 	}
-	root, err := paths.Root(env.Getenv)
+	root, err := distRoot(env.Getenv)
 	if err != nil {
 		return cli.Envf(env, "bundle: %v", err)
 	}

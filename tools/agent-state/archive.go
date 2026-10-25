@@ -139,6 +139,12 @@ func plannedManifestMatches(bundle string, planned planEntry) bool {
 }
 
 func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
+	return withIndexLock(cfg, func(idx *registryIndex) int {
+		return archiveCommandLocked(cfg, args, stdout, stderr, idx)
+	})
+}
+
+func archiveCommandLocked(cfg config, args []string, stdout, stderr io.Writer, idx *registryIndex) int {
 	o, err := parseOptions(args, []string{"apply", "policy", "dry-run"}, []string{"plan", "plan-dir"})
 	if err != nil {
 		return parseErr(stderr, err)
@@ -162,9 +168,12 @@ func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 			return usageError(stderr, "archive --policy [--apply --plan <id>] [--plan-dir DIR]")
 		}
 		if !o.bools["apply"] {
-			plan, err := buildArchiveRetentionPlan(cfg)
+			plan, err := buildArchiveRetentionPlanLocked(cfg, *idx)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s: archive policy plan failed\n", prog)
+				if errors.Is(err, errArchiveBlocked) {
+					return exitBlocked
+				}
 				return exitEnv
 			}
 			if err := persistPlan(plan, planDirectory); err != nil {
@@ -198,6 +207,13 @@ func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "agent-state: retention plan no longer matches eligible evidence snapshots")
 				return exitBlocked
 			}
+		}
+		currentIndex, err := loadIndex(cfg)
+		if err != nil {
+			return exitEnv
+		}
+		if err := checkRetentionProtection(cfg, currentIndex, current, eligible); err != nil {
+			return exitBlocked
 		}
 		args := append([]string{"forget", "--prune"}, plan.SnapshotIDs...)
 		if _, err := runRestic(cfg, args...); err != nil {
@@ -237,12 +253,7 @@ func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if m.Status != "closed" || m.Archive != nil {
 		return exitBlocked
 	}
-	idx, err := loadIndex(cfg)
-	if err != nil {
-		return exitEnv
-	}
-	open, openErr := safetyOpenPaths()
-	if reasons := safetyReasons(cfg, idx, bundle, open, openErr); len(reasons) > 0 {
+	if reasons := protectionCheck(cfg, *idx, bundle); len(reasons) > 0 {
 		fmt.Fprintf(stderr, "agent-state: archive blocked by %s\n", strings.Join(reasons, ","))
 		return exitBlocked
 	}
@@ -264,7 +275,10 @@ func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-state: archive blocked by %s\n", strings.Join(reasons, ","))
 		return exitBlocked
 	}
-	if err := archiveBundle(cfg, bundle, &m, planned); err != nil {
+	if err := validateArchiveStage(cfg, bundle, m); err != nil {
+		return exitBlocked
+	}
+	if err := archiveBundle(cfg, bundle, &m, planned, idx); err != nil {
 		fmt.Fprintf(stderr, "%s: archive failed; local bundle remains hot when the archive phase has not started\n", prog)
 		if errors.Is(err, errArchiveBlocked) {
 			return exitBlocked
@@ -277,7 +291,7 @@ func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 
 var errArchiveBlocked = errors.New("archive staging is now blocked")
 
-func archiveBundle(cfg config, bundle string, m *evidenceManifest, planned planEntry) error {
+func archiveBundle(cfg config, bundle string, m *evidenceManifest, planned planEntry, idx *registryIndex) error {
 	if _, err := measureTreeWithin(bundle, cfg.Root); err != nil {
 		return err
 	}
@@ -325,40 +339,32 @@ func archiveBundle(cfg config, bundle string, m *evidenceManifest, planned planE
 	if _, err := runRestic(cfg, "check"); err != nil {
 		return err
 	}
-	// Backup and verification may be slow. Serialize only final staging with
-	// registry writers, and refresh every protection and the backed-up content.
-	var stageErr error
-	code := withIndexLock(cfg, func(idx *registryIndex) int {
-		if size, err := measureTreeWithin(bundle, cfg.Root); err != nil || size != planned.Bytes {
-			return exitBlocked
-		}
-		open, openErr := safetyOpenPaths()
-		if reasons := safetyReasons(cfg, *idx, bundle, open, openErr); len(reasons) != 0 {
-			return exitBlocked
-		}
-		current, err := hashTree(bundle)
-		if err != nil || !maps.Equal(current, before) || len(currentProtectionReasons(cfg, *idx, bundle)) != 0 {
-			return exitBlocked
-		}
-		m.Archive = &archiveRef{Snapshot: snapshotID, RepoRef: "config:agent_state.archive.repo", VerifiedAt: time.Now().UTC().Format(time.RFC3339), ManifestSHA256: before["manifest.json"]}
-		stageErr = stageArchivedBundle(cfg, bundle, m)
-		if stageErr != nil {
-			return exitNegative
-		}
-		return exitOK
-	})
-	if stageErr != nil {
-		return stageErr
+	// The command holds the registry lock across backup, verification and commit.
+	currentIndex, err := loadIndex(cfg)
+	if err != nil {
+		return err
 	}
-	if code != exitOK {
+	*idx = currentIndex
+	if size, err := measureTreeWithin(bundle, cfg.Root); err != nil || size != planned.Bytes {
 		return errArchiveBlocked
 	}
-	return nil
+	if reasons := protectionCheck(cfg, *idx, bundle); len(reasons) != 0 {
+		return errArchiveBlocked
+	}
+	current, err := hashTree(bundle)
+	if err != nil || !maps.Equal(current, before) {
+		return errArchiveBlocked
+	}
+	m.Archive = &archiveRef{Snapshot: snapshotID, RepoRef: "config:agent_state.archive.repo", VerifiedAt: time.Now().UTC().Format(time.RFC3339), ManifestSHA256: before["manifest.json"]}
+	return stageArchivedBundle(cfg, bundle, m, *idx)
 }
 
-func stageArchivedBundle(cfg config, bundle string, m *evidenceManifest) error {
+func validateArchiveStage(cfg config, bundle string, m evidenceManifest) error {
 	trash := rootPath(cfg, "_registry", "trash", "archive-"+m.ID)
 	if err := validateExistingPath(cfg.Root, filepath.Dir(trash)); err != nil {
+		return err
+	}
+	if err := validateExistingPath(cfg.Root, bundle); err != nil {
 		return err
 	}
 	if _, err := os.Lstat(trash); err == nil {
@@ -366,29 +372,57 @@ func stageArchivedBundle(cfg config, bundle string, m *evidenceManifest) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := mkdirState(cfg.Root, filepath.Dir(trash)); err != nil {
+
+	return nil
+}
+
+func stageArchivedBundle(cfg config, bundle string, m *evidenceManifest, idx registryIndex) error {
+	if err := validateArchiveStage(cfg, bundle, *m); err != nil {
 		return err
 	}
-	if err := os.Rename(bundle, trash); err != nil {
+	expectedTree, err := treeFingerprint(bundle)
+	if err != nil {
 		return err
 	}
-	if err := mkdirState(cfg.Root, bundle); err != nil {
-		_ = os.Rename(trash, bundle)
+	trash := rootPath(cfg, "_registry", "trash", "archive-"+m.ID)
+	stage, err := os.MkdirTemp(filepath.Dir(bundle), ".agent-state-archive-")
+	if err != nil {
 		return err
 	}
-	if err := writeJSONAtomic(filepath.Join(bundle, "manifest.json"), m, 0o600); err != nil {
-		_ = os.Remove(filepath.Join(bundle, "manifest.json"))
-		_ = os.Remove(bundle)
-		_ = os.Rename(trash, bundle)
+	defer os.RemoveAll(stage)
+	if err := writeJSONAtomic(filepath.Join(stage, "manifest.json"), m, 0o600); err != nil {
 		return err
 	}
 	stub := fmt.Sprintf("# Archived evidence\n\nBundle `%s` is stored in the configured restic repository.\nRestore it with `agent-state restore %s`.\n", m.ID, m.ID)
-	if err := os.WriteFile(filepath.Join(bundle, "ARCHIVED.md"), []byte(stub), 0o600); err != nil {
-		_ = os.Remove(filepath.Join(bundle, "manifest.json"))
-		_ = os.Remove(bundle)
-		_ = os.Rename(trash, bundle)
+	if err := writeStateBytes(filepath.Join(stage, "ARCHIVED.md"), []byte(stub), 0o600); err != nil {
 		return err
 	}
+
+	tx, err := beginStateMutation(cfg)
+	if err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		return errors.Join(cause, tx.rollback())
+	}
+	if len(protectionCheck(cfg, idx, bundle)) != 0 {
+		return rollback(errArchiveBlocked)
+	}
+	currentTree, err := treeFingerprint(bundle)
+	if err != nil || currentTree != expectedTree {
+		return rollback(errArchiveBlocked)
+	}
+	if err := tx.mkdir(filepath.Dir(trash)); err != nil {
+		return rollback(err)
+	}
+	if err := os.Rename(bundle, trash); err != nil {
+		return rollback(err)
+	}
+	if err := os.Rename(stage, bundle); err != nil {
+		restoreErr := os.Rename(trash, bundle)
+		return rollback(errors.Join(err, restoreErr))
+	}
+	tx.commit()
 	return nil
 }
 
@@ -538,7 +572,37 @@ func eligibleRetentionSnapshots(snapshots []resticSnapshot, months int, now time
 	return eligible, nil
 }
 
+func checkRetentionProtection(cfg config, idx registryIndex, snapshots []resticSnapshot, selected map[string]bool) error {
+	for _, snapshot := range snapshots {
+		if !selected[snapshot.ID] {
+			continue
+		}
+		if len(snapshot.Paths) == 0 {
+			return errArchiveBlocked
+		}
+		for _, path := range snapshot.Paths {
+			if len(protectionCheck(cfg, idx, path)) != 0 {
+				return errArchiveBlocked
+			}
+		}
+	}
+	return nil
+}
+
 func buildArchiveRetentionPlan(cfg config) (gcPlan, error) {
+	var plan gcPlan
+	var planErr error
+	code := withIndexLock(cfg, func(idx *registryIndex) int {
+		plan, planErr = buildArchiveRetentionPlanLocked(cfg, *idx)
+		return exitOK
+	})
+	if code != exitOK {
+		return plan, errArchiveBlocked
+	}
+	return plan, planErr
+}
+
+func buildArchiveRetentionPlanLocked(cfg config, idx registryIndex) (gcPlan, error) {
 	plan := gcPlan{Schema: planSchema, Action: "archive_retention", Root: cfg.Root, CreatedAt: time.Now().UTC().Format(time.RFC3339), Policy: planPolicy{ScratchTTL: cfg.ScratchTTL, EvidenceGrace: cfg.EvidenceGrace, ArchiveRetentionMonths: cfg.Archive.RetentionMonths, ActiveLedgerDays: cfg.ActiveLedgerDays}}
 	id, err := newID("plan-")
 	if err != nil {
@@ -551,6 +615,9 @@ func buildArchiveRetentionPlan(cfg config) (gcPlan, error) {
 	}
 	eligible, err := eligibleRetentionSnapshots(snapshots, cfg.Archive.RetentionMonths, time.Now())
 	if err != nil {
+		return plan, err
+	}
+	if err := checkRetentionProtection(cfg, idx, snapshots, eligible); err != nil {
 		return plan, err
 	}
 	for snapshotID := range eligible {
@@ -712,6 +779,12 @@ func verifyCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 }
 
 func restoreCommand(cfg config, args []string, stdout, stderr io.Writer) int {
+	return withIndexLock(cfg, func(idx *registryIndex) int {
+		return restoreCommandLocked(cfg, args, stdout, stderr, idx)
+	})
+}
+
+func restoreCommandLocked(cfg config, args []string, stdout, stderr io.Writer, idx *registryIndex) int {
 	o, err := parseOptions(args, nil, []string{"to"})
 	if err != nil {
 		return parseErr(stderr, err)
@@ -725,26 +798,16 @@ func restoreCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if _, err := resticEnvironment(cfg); err != nil {
 		return exitEnv
 	}
-	var bundle, originalTree string
-	var m evidenceManifest
-	// Bind the source manifest and tree together before the unlocked restic work.
-	code := withIndexLock(cfg, func(_ *registryIndex) int {
-		var err error
-		bundle, m, err = resolveBundle(cfg, o.pos[0])
-		if err != nil {
-			return exitNegative
-		}
-		if m.Archive == nil || !snapshotIDPattern.MatchString(m.Archive.Snapshot) {
-			return exitBlocked
-		}
-		originalTree, err = treeFingerprint(bundle)
-		if err != nil {
-			return exitBlocked
-		}
-		return exitOK
-	})
-	if code != exitOK {
-		return code
+	bundle, m, err := resolveBundle(cfg, o.pos[0])
+	if err != nil {
+		return exitNegative
+	}
+	if m.Archive == nil || !snapshotIDPattern.MatchString(m.Archive.Snapshot) {
+		return exitBlocked
+	}
+	originalTree, err := treeFingerprint(bundle)
+	if err != nil {
+		return exitBlocked
 	}
 	target := o.values["to"]
 	if target == "" {
@@ -756,6 +819,22 @@ func restoreCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	}
 	if err := validateRestoreTarget(cfg.Root, target, target == bundle); err != nil {
 		return usageError(stderr, "restore target is unsafe")
+	}
+	if reasons := protectionCheck(cfg, *idx, target); len(reasons) != 0 {
+		return exitBlocked
+	}
+	if err := preflightCASDestinations(cfg, *idx, m.Blobs); err != nil {
+		return exitBlocked
+	}
+	trash := ""
+	if target == bundle {
+		trash = rootPath(cfg, "_registry", "trash", "restore-"+m.ID+"-"+time.Now().UTC().Format("20060102T150405Z"))
+		if err := validateExistingPath(cfg.Root, trash); err != nil {
+			return exitBlocked
+		}
+		if _, err := os.Lstat(trash); !errors.Is(err, os.ErrNotExist) {
+			return exitBlocked
+		}
 	}
 	parentInfo, err := os.Stat(filepath.Dir(target))
 	if err != nil || !parentInfo.IsDir() {
@@ -788,54 +867,86 @@ func restoreCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if err := writeJSONAtomic(filepath.Join(restored, "manifest.json"), restoredManifest, 0o600); err != nil {
 		return exitEnv
 	}
-	return withIndexLock(cfg, func(idx *registryIndex) int {
-		if err := validateRestoreTarget(cfg.Root, target, target == bundle); err != nil {
+
+	currentIndex, err := loadIndex(cfg)
+	if err != nil {
+		return exitEnv
+	}
+	*idx = currentIndex
+	if err := validateRestoreTarget(cfg.Root, target, target == bundle); err != nil {
+		return exitBlocked
+	}
+	if reasons := protectionCheck(cfg, *idx, target); len(reasons) != 0 {
+		return exitBlocked
+	}
+	if err := preflightCASDestinations(cfg, *idx, m.Blobs); err != nil {
+		return exitBlocked
+	}
+	if target == bundle {
+		current, err := treeFingerprint(bundle)
+		if err != nil || current != originalTree {
 			return exitBlocked
 		}
-		if target == bundle {
-			open, openErr := safetyOpenPaths()
-			if reasons := safetyReasons(cfg, *idx, bundle, open, openErr); len(reasons) != 0 {
-				return exitBlocked
-			}
-		} else if pinBlocks(target, idx.Pins) {
-			return exitBlocked
-		}
-		if err := restoreCASBlobs(cfg, tmp, m.Blobs); err != nil {
-			fmt.Fprintln(stderr, "agent-state: CAS blob restore failed")
+	}
+
+	tx, err := beginStateMutation(cfg)
+	if err != nil {
+		return exitEnv
+	}
+	rollbackCode := func(code int) int {
+		if rollbackErr := tx.rollback(); rollbackErr != nil {
+			fmt.Fprintln(stderr, "agent-state: restore rollback failed")
 			return exitNegative
 		}
-		if target == bundle {
-			trash := rootPath(cfg, "_registry", "trash", "restore-"+m.ID+"-"+time.Now().UTC().Format("20060102T150405Z"))
-			if err := validateExistingPath(cfg.Root, filepath.Dir(trash)); err != nil {
-				return exitBlocked
-			}
-			if _, err := os.Lstat(trash); err == nil {
-				return exitBlocked
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return exitEnv
-			}
-			if err := mkdirState(cfg.Root, filepath.Dir(trash)); err != nil {
-				return exitEnv
-			}
-			current, err := treeFingerprint(bundle)
-			if err != nil || current != originalTree || len(currentProtectionReasons(cfg, *idx, bundle)) != 0 {
-				return exitBlocked
-			}
-			if err := os.Rename(bundle, trash); err != nil {
-				return exitEnv
-			}
-			if err := os.Rename(restored, bundle); err != nil {
-				_ = os.Rename(trash, bundle)
-				return exitEnv
-			}
-		} else {
-			if err := os.Rename(restored, target); err != nil {
-				return exitEnv
-			}
+		return code
+	}
+	if err := restoreCASBlobs(cfg, tmp, m.Blobs, tx); err != nil {
+		fmt.Fprintln(stderr, "agent-state: CAS blob restore failed")
+		return rollbackCode(exitNegative)
+	}
+	if target == bundle {
+		if err := validateExistingPath(cfg.Root, filepath.Dir(trash)); err != nil {
+			return rollbackCode(exitBlocked)
 		}
-		fmt.Fprintf(stdout, "restored %s to %s\n", m.ID, target)
-		return exitOK
-	})
+		if _, err := os.Lstat(trash); err == nil {
+			return rollbackCode(exitBlocked)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return rollbackCode(exitEnv)
+		}
+		if reasons := protectionCheck(cfg, *idx, bundle); len(reasons) != 0 {
+			return rollbackCode(exitBlocked)
+		}
+		current, err := treeFingerprint(bundle)
+		if err != nil || current != originalTree {
+			return rollbackCode(exitBlocked)
+		}
+		if err := tx.mkdir(filepath.Dir(trash)); err != nil {
+			return rollbackCode(exitEnv)
+		}
+		if err := os.Rename(bundle, trash); err != nil {
+			return rollbackCode(exitEnv)
+		}
+		if err := os.Rename(restored, bundle); err != nil {
+			restoreErr := os.Rename(trash, bundle)
+			if restoreErr != nil {
+				fmt.Fprintln(stderr, "agent-state: original archive stub could not be restored")
+			}
+			return rollbackCode(exitEnv)
+		}
+	} else {
+		if len(protectionCheck(cfg, *idx, target)) != 0 {
+			return rollbackCode(exitBlocked)
+		}
+		if err := validateRestoreTarget(cfg.Root, target, false); err != nil {
+			return rollbackCode(exitBlocked)
+		}
+		if err := os.Rename(restored, target); err != nil {
+			return rollbackCode(exitEnv)
+		}
+	}
+	tx.commit()
+	fmt.Fprintf(stdout, "restored %s to %s\n", m.ID, target)
+	return exitOK
 }
 
 func validateRestoreTarget(root, target string, allowExisting bool) error {
@@ -917,43 +1028,128 @@ func verifyRestoredManifest(cfg config, bundlePath, restoreTarget string, m evid
 	return nil
 }
 
-func restoreCASBlobs(cfg config, restoreRoot string, blobs []fileRecord) error {
+func validateCASDestinations(cfg config, blobs []fileRecord) error {
+	seen := make(map[string]bool, len(blobs))
 	for _, item := range blobs {
-		source := filepath.Join(restoreRoot, filepath.FromSlash(strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(rootPath(cfg, filepath.FromSlash(item.Path)), string(filepath.Separator))), "/")))
+		if !safeRelativePath(item.Path) {
+			return errors.New("CAS blob path is unsafe")
+		}
 		destination := rootPath(cfg, filepath.FromSlash(item.Path))
+		if seen[destination] {
+			return errors.New("duplicate CAS blob destination")
+		}
+		seen[destination] = true
 		if err := validateRestoreTarget(cfg.Root, filepath.Dir(destination), true); err != nil {
 			return err
 		}
-		if info, err := os.Lstat(destination); err == nil {
-			if !info.Mode().IsRegular() {
-				return errors.New("existing CAS blob is not a regular file")
+		info, err := os.Lstat(destination)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("existing CAS blob is not a regular file")
+		}
+		if err := validateExistingPath(cfg.Root, destination); err != nil {
+			return err
+		}
+		sha, size, err := hashFile(destination)
+		if err != nil || sha != item.SHA256 || size != item.Bytes {
+			return errors.New("existing CAS blob does not match its manifest")
+		}
+	}
+	return nil
+}
+
+func preflightCASDestinations(cfg config, idx registryIndex, blobs []fileRecord) error {
+	if err := validateCASDestinations(cfg, blobs); err != nil {
+		return err
+	}
+	for _, item := range blobs {
+		destination := rootPath(cfg, filepath.FromSlash(item.Path))
+		if reasons := protectionCheck(cfg, idx, destination); len(reasons) != 0 {
+			return errors.New("CAS blob destination is protected")
+		}
+	}
+	return nil
+}
+
+func restoreCASBlobs(cfg config, restoreRoot string, blobs []fileRecord, transactions ...*stateTransaction) error {
+	if len(transactions) > 1 {
+		return errors.New("restore accepts only one transaction")
+	}
+	if len(transactions) == 0 {
+		var restoreErr error
+		code := withIndexTransaction(cfg, io.Discard, func(_ *registryIndex, tx *stateTransaction) int {
+			restoreErr = restoreCASBlobs(cfg, restoreRoot, blobs, tx)
+			if restoreErr != nil {
+				return exitNegative
 			}
-			if err := validateExistingPath(cfg.Root, destination); err != nil {
-				return err
-			}
-			sha, size, hashErr := hashFile(destination)
-			if hashErr != nil || sha != item.SHA256 || size != item.Bytes {
-				return errors.New("existing CAS blob does not match its manifest")
-			}
+			return exitOK
+		})
+		if code != exitOK && restoreErr == nil {
+			return errors.New("CAS restore lock or transaction failed")
+		}
+		return restoreErr
+	}
+	tx := transactions[0]
+	if tx == nil {
+		return errors.New("restore transaction is nil")
+	}
+	fail := func(cause error) error {
+		return errors.Join(cause, tx.rollback())
+	}
+	idx, err := loadIndex(cfg)
+	if err != nil {
+		return fail(err)
+	}
+	if err := preflightCASDestinations(cfg, idx, blobs); err != nil {
+		return fail(err)
+	}
+	sources := make([]string, len(blobs))
+	for i, item := range blobs {
+		destination := rootPath(cfg, filepath.FromSlash(item.Path))
+		if _, err := os.Lstat(destination); err == nil {
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return fail(err)
 		}
+		source := filepath.Join(restoreRoot, filepath.FromSlash(strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(destination, string(filepath.Separator))), "/")))
 		if err := validateExistingPath(restoreRoot, source); err != nil {
-			return err
+			return fail(err)
 		}
 		if info, err := os.Lstat(source); err != nil || !info.Mode().IsRegular() {
-			return errors.New("restored CAS blob is not a regular file")
+			return fail(errors.New("restored CAS blob is not a regular file"))
 		}
 		sha, size, err := hashFile(source)
 		if err != nil || sha != item.SHA256 || size != item.Bytes {
-			return errors.New("restored CAS blob does not match its manifest")
+			return fail(errors.New("restored CAS blob does not match its manifest"))
 		}
-		if err := mkdirState(cfg.Root, filepath.Dir(destination)); err != nil {
-			return err
+		sources[i] = source
+	}
+	for i, item := range blobs {
+		destination := rootPath(cfg, filepath.FromSlash(item.Path))
+		if _, err := os.Lstat(destination); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fail(err)
 		}
-		if err := copyFile(destination, source, 0o600); err != nil {
-			return err
+		if len(protectionCheck(cfg, idx, destination)) != 0 {
+			return fail(errors.New("CAS destination became protected"))
+		}
+		if err := tx.mkdir(filepath.Dir(destination)); err != nil {
+			return fail(err)
+		}
+		if err := tx.track(destination); err != nil {
+			return fail(err)
+		}
+		if err := copyFile(destination, sources[i], 0o600); err != nil {
+			return fail(err)
+		}
+		if sum, n, err := hashFile(destination); err != nil || sum != item.SHA256 || n != item.Bytes {
+			return fail(errors.New("CAS source changed while copying"))
 		}
 	}
 	return nil

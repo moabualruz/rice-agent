@@ -26,6 +26,13 @@ func putFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+func isolateOpenScan(t *testing.T) {
+	t.Helper()
+	saved := safetyOpenPaths
+	safetyOpenPaths = func() ([]string, error) { return nil, nil }
+	t.Cleanup(func() { safetyOpenPaths = saved })
+}
+
 func testConfig(root string) config {
 	return config{Root: root, ActiveLedgerDays: 7, ScratchTTL: "72h", EvidenceGrace: "336h", ProjectBudget: 2 * gib, WarnTotal: 8 * gib, FailTotal: 15 * gib}
 }
@@ -111,7 +118,7 @@ func TestSafetyChecksBlockPinsOpenFilesActiveLedgersAndDirtyGit(t *testing.T) {
 		return []repoStateRecord{{Staged: 1, Upstream: nil, Ahead: nil}}, nil
 	}
 	idx := registryIndex{Schema: indexSchema, Pins: []pin{{Path: candidate, Reason: "test"}}}
-	reasons := safetyReasons(testConfig(root), idx, candidate, []string{filepath.Join(candidate, "data")}, nil)
+	reasons := protectionCheck(testConfig(root), idx, candidate)
 	for _, want := range []string{"pinned_path", "open_file_or_process_cwd", "active_ledger_reference"} {
 		if !contains(reasons, want) {
 			t.Errorf("missing %s in %v", want, reasons)

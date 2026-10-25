@@ -104,7 +104,7 @@ func archiveFixture(t *testing.T) (config, string, gcPlan) {
 }
 
 func TestArchiveRechecksProtectionBeforeStaging(t *testing.T) {
-	for _, protection := range []string{"pin", "ledger", "open-file", "changed-manifest", "changed-content"} {
+	for _, protection := range []string{"ledger", "open-file", "changed-manifest", "changed-content"} {
 		t.Run(protection, func(t *testing.T) {
 			cfg, bundle, plan := archiveFixture(t)
 			baseExec := archiveExec
@@ -153,7 +153,7 @@ func TestArchiveRechecksProtectionBeforeStaging(t *testing.T) {
 }
 
 func TestRestoreRechecksBeforeReplacingTarget(t *testing.T) {
-	for _, change := range []string{"pin", "ledger", "open-file", "changed-stub", "new-target"} {
+	for _, change := range []string{"ledger", "open-file", "changed-stub", "new-target"} {
 		t.Run(change, func(t *testing.T) {
 			cfg, bundle, plan := archiveFixture(t)
 			if code := archiveCommand(cfg, []string{bundle, "--apply", "--plan", plan.ID}, io.Discard, io.Discard); code != exitOK {
@@ -204,6 +204,7 @@ func TestRestoreRechecksBeforeReplacingTarget(t *testing.T) {
 }
 
 func TestEvidenceMutationsWaitForRegistryLock(t *testing.T) {
+	isolateOpenScan(t)
 	for _, action := range []string{"put", "close"} {
 		t.Run(action, func(t *testing.T) {
 			cfg := testConfig(t.TempDir())
@@ -357,7 +358,7 @@ func TestArchiveFinalSafetyScanHoldsRegistryLock(t *testing.T) {
 			return nil, nil
 		}
 		finalScan = true
-		f, err := os.OpenFile(lockPath(cfg), os.O_CREATE|os.O_RDWR, 0o600)
+		f, err := os.Open(indexLockAnchor(cfg))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -73,14 +73,65 @@ type Receipt struct {
 var executable = os.Executable
 
 var installReceiptWrite = writeFileAtomic
+var installLinkRemove = os.Remove
 
 func platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
 
+func resolvedPath(path, home string) (string, error) {
+	abs, err := absPath(path, home)
+	if err != nil {
+		return "", err
+	}
+	current := abs
+	var tail []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return abs, nil
+		}
+		tail = append(tail, filepath.Base(current))
+		current = parent
+	}
+}
+
+func distRoot(getenv func(string) string) (string, error) {
+	root, err := paths.Root(getenv)
+	if err != nil {
+		return "", err
+	}
+	return resolvedPath(root, paths.Home(getenv))
+}
+
+func stateDirectory(getenv func(string) string) (string, error) {
+	return resolvedPath(paths.StateDir(getenv), paths.Home(getenv))
+}
+
 func receiptPath(getenv func(string) string) string {
-	return filepath.Join(paths.StateDir(getenv), ReceiptFile)
+	state, err := stateDirectory(getenv)
+	if err != nil {
+		state, _ = filepath.Abs(paths.StateDir(getenv))
+	}
+	return filepath.Join(state, ReceiptFile)
 }
 
 func loadReceipt(path string) (*Receipt, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("receipt is not a regular file")
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -90,7 +141,19 @@ func loadReceipt(path string) (*Receipt, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if r.Schema != ReceiptSchema {
-		return nil, fmt.Errorf("%s: schema %q, want %q", path, r.Schema, ReceiptSchema)
+		return nil, errors.New("unsupported install receipt schema")
+	}
+	if !filepath.IsAbs(r.Root) || !filepath.IsAbs(r.Prefix) {
+		return nil, errors.New("receipt roots must be absolute")
+	}
+	resolvedPrefix, err := resolvedPath(r.Prefix, "")
+	if err != nil || resolvedPrefix != filepath.Clean(r.Prefix) {
+		return nil, errors.New("receipt prefix traverses a symlink")
+	}
+	for _, link := range r.Links {
+		if !filepath.IsAbs(link.Path) || !filepath.IsAbs(link.Target) || filepath.Dir(link.Path) != filepath.Clean(r.Prefix) || filepath.Base(link.Path) != link.Name {
+			return nil, errors.New("receipt link is outside its recorded prefix")
+		}
 	}
 	return &r, nil
 }
@@ -113,6 +176,10 @@ func desiredLinks(root string, binaries map[string]string, dryRun bool) ([]want,
 		exe, err := executable()
 		if err != nil {
 			return nil, fmt.Errorf("locate the running executable: %w", err)
+		}
+		exe, err = filepath.Abs(exe)
+		if err != nil {
+			return nil, fmt.Errorf("resolve the running executable: %w", err)
 		}
 		bin = realOrSelf(exe)
 	}
@@ -183,12 +250,12 @@ func runInstall(env *cli.Env) int {
 	if p == "" {
 		p = defaultPrefix(env.Getenv)
 	}
-	p, err := absPath(p, home)
+	p, err := resolvedPath(p, home)
 	if err != nil {
 		return cli.Usagef(env, "install: --prefix: %v", err)
 	}
 	if *uninstall {
-		return uninstallLinks(env, *dryRun)
+		return uninstallLinks(env, *dryRun, p)
 	}
 	return installLinks(env, p, *dryRun)
 }
@@ -240,48 +307,41 @@ func shadowing(name, target, prefix, pathEnv string) string {
 }
 
 func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
-	root, err := paths.Root(env.Getenv)
+	home := paths.Home(env.Getenv)
+	root, err := distRoot(env.Getenv)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	stateDir, err := stateDirectory(env.Getenv)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	prefix, err = resolvedPath(prefix, home)
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
 	if !dryRun {
-		unlock, err := lockInstallation(paths.StateDir(env.Getenv))
+		unlock, err := lockInstallPaths(stateDir, prefix)
 		if err != nil {
 			return cli.Envf(env, "install: %v", err)
 		}
 		defer unlock()
-		// Different state directories may still install into the same prefix.
-		unlockPrefix, err := lockInstallFile(filepath.Join(prefix, ".agent-dry-install.lock"))
-		if err != nil {
-			return cli.Envf(env, "install: %v", err)
-		}
-		defer unlockPrefix()
 	}
-	goToolRoot := filepath.Join(paths.StateDir(env.Getenv), "go-tools")
-	binaries := map[string]string{}
-	stagedByName := map[string]string{}
-	var stagedGoTools []goToolBinary
-	if dryRun {
-		binaries, err = goToolDestinations(root, goToolRoot, runtime.GOOS, runtime.GOARCH)
-		if err != nil {
-			return cli.Envf(env, "install: %v", err)
-		}
-	} else {
-		stagedGoTools, err = buildGoTools(root, goToolRoot, runtime.GOOS, runtime.GOARCH, env.Getenv("PATH"))
-		if err != nil {
-			return cli.Envf(env, "install: %v", err)
-		}
-		defer discardGoTools(stagedGoTools)
-		for _, tool := range stagedGoTools {
-			binaries[tool.Name] = tool.Target
-			stagedByName[tool.Name] = tool.Path
-		}
+	goToolRoot := filepath.Join(stateDir, "go-tools")
+	binaries, err := goToolDestinations(root, goToolRoot, runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
 	}
 	wants, err := desiredLinks(root, binaries, dryRun)
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
-	rpath := receiptPath(env.Getenv)
+	if !dryRun {
+		if err := validateGoTools(root, goToolRoot, runtime.GOOS, runtime.GOARCH, env.Getenv("PATH")); err != nil {
+			return cli.Envf(env, "install: %v", err)
+		}
+	}
+	rpath := filepath.Join(stateDir, ReceiptFile)
 	prev := map[string]Link{}
 	if r, err := loadReceipt(rpath); err == nil {
 		for _, l := range r.Links {
@@ -326,12 +386,8 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 			collisions = append(collisions, fmt.Sprintf("%s: another %s is on PATH at %s", lp, w.name, other))
 			continue
 		}
-		hashTarget := w.target
-		if staged := stagedByName[w.name]; staged != "" {
-			hashTarget = staged
-		}
-		if !dryRun || binaries[w.name] == "" {
-			sum, err := sha256File(hashTarget)
+		if binaries[w.name] == "" {
+			sum, err := sha256File(w.target)
 			if err != nil {
 				return cli.Envf(env, "install: %v", err)
 			}
@@ -386,19 +442,9 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 		return cli.ExitOK
 	}
 
-	if err := os.MkdirAll(prefix, 0o755); err != nil {
-		return cli.Envf(env, "install: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(rpath), 0o755); err != nil {
-		return cli.Envf(env, "install: %v", err)
-	}
-	raw, err := marshalJSON(receipt)
-	if err != nil {
-		return cli.Envf(env, "install: %v", err)
-	}
 	mutations := []string{rpath}
-	for _, tool := range stagedGoTools {
-		mutations = append(mutations, tool.Target)
+	for _, target := range binaries {
+		mutations = append(mutations, target)
 	}
 	for _, link := range links {
 		if link.Action != "unchanged" {
@@ -419,6 +465,28 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 			code = cli.Envf(env, "install: %v", err)
 		}
 	}()
+	stagedGoTools, err := buildGoTools(root, goToolRoot, runtime.GOOS, runtime.GOARCH, env.Getenv("PATH"))
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	defer discardGoTools(stagedGoTools)
+	stagedByName := map[string]string{}
+	for _, tool := range stagedGoTools {
+		stagedByName[tool.Name] = tool.Path
+	}
+	for i := range links {
+		if staged := stagedByName[links[i].Name]; staged != "" {
+			sum, err := sha256File(staged)
+			if err != nil {
+				return cli.Envf(env, "install: %v", err)
+			}
+			links[i].SHA256 = sum
+		}
+	}
+	raw, err := marshalJSON(receipt)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
 	if err := commitGoTools(stagedGoTools); err != nil {
 		return cli.Envf(env, "install: commit Go tools: %v", err)
 	}
@@ -505,15 +573,29 @@ type uninstallResult struct {
 	Skipped []Link `json:"skipped"`
 }
 
-func uninstallLinks(env *cli.Env, dryRun bool) int {
+func uninstallLinks(env *cli.Env, dryRun bool, prefix string) (code int) {
+	home := paths.Home(env.Getenv)
+	stateDir, err := stateDirectory(env.Getenv)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	prefix, err = resolvedPath(prefix, home)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	rpath := filepath.Join(stateDir, ReceiptFile)
+	var unlock func()
 	if !dryRun {
-		unlock, err := lockInstallation(paths.StateDir(env.Getenv))
+		unlock, err = lockInstallPaths(stateDir, prefix)
 		if err != nil {
 			return cli.Envf(env, "install: %v", err)
 		}
-		defer unlock()
+		defer func() {
+			if unlock != nil {
+				unlock()
+			}
+		}()
 	}
-	rpath := receiptPath(env.Getenv)
 	r, err := loadReceipt(rpath)
 	if errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintf(env.Stderr, "agent-dry: install: no receipt at %s; nothing to uninstall\n", rpath)
@@ -523,15 +605,35 @@ func uninstallLinks(env *cli.Env, dryRun bool) int {
 		return cli.Envf(env, "install: %v", err)
 	}
 	if !dryRun {
-		unlockPrefix, err := lockInstallFile(filepath.Join(r.Prefix, ".agent-dry-install.lock"))
+		actualPrefix, err := resolvedPath(r.Prefix, home)
 		if err != nil {
-			return cli.Envf(env, "install: %v", err)
+			return cli.Envf(env, "install: receipt prefix: %v", err)
 		}
-		defer unlockPrefix()
+		if actualPrefix != prefix {
+			expectedPrefix := actualPrefix
+			// The first snapshot only routes to the recorded prefix. Discard it
+			// and bind every authoritative field again under both final locks.
+			unlock()
+			unlock = nil
+			unlock, err = lockInstallPaths(stateDir, actualPrefix)
+			if err != nil {
+				return cli.Envf(env, "install: %v", err)
+			}
+			r, err = loadReceipt(rpath)
+			if err != nil {
+				return cli.Envf(env, "install: %v", err)
+			}
+			actualPrefix, err = resolvedPath(r.Prefix, home)
+			if err != nil || actualPrefix != expectedPrefix {
+				return cli.Envf(env, "install: receipt prefix changed during uninstall")
+			}
+		}
 	}
 	roots := []string{r.Root}
-	if cur, err := paths.Root(env.Getenv); err == nil && cur != r.Root {
-		roots = append(roots, cur)
+	if cur, err := distRoot(env.Getenv); err == nil {
+		if cur != r.Root {
+			roots = append(roots, cur)
+		}
 	}
 	res := uninstallResult{Schema: ReceiptSchema, DryRun: dryRun, Receipt: rpath, Removed: []Link{}, Skipped: []Link{}}
 	var keep []Link
@@ -553,20 +655,35 @@ func uninstallLinks(env *cli.Env, dryRun bool) int {
 			continue
 		}
 		l.Action = "removed"
-		if !dryRun {
-			if err := os.Remove(l.Path); err != nil {
-				fmt.Fprintf(env.Stderr, "agent-dry: install: remove %s: %v\n", l.Path, err)
-				l.Action, l.Reason = "skipped", err.Error()
-				res.Skipped = append(res.Skipped, l)
-				keep = append(keep, l)
-				continue
-			}
-		}
 		res.Removed = append(res.Removed, l)
 	}
 	if !dryRun {
+		mutations := []string{rpath}
+		for _, link := range res.Removed {
+			mutations = append(mutations, link.Path)
+		}
+		tx, err := prepareInstall(mutations)
+		if err != nil {
+			return cli.Envf(env, "install: preflight: %v", err)
+		}
+		defer func() {
+			if err := tx.finish(); err != nil {
+				code = cli.Envf(env, "install: %v", err)
+			}
+		}()
+		removed := res.Removed[:0]
+		for _, link := range res.Removed {
+			if err := installLinkRemove(link.Path); err != nil {
+				link.Action, link.Reason = "skipped", err.Error()
+				res.Skipped = append(res.Skipped, link)
+				keep = append(keep, link)
+				continue
+			}
+			removed = append(removed, link)
+		}
+		res.Removed = removed
 		if len(keep) == 0 {
-			if err := os.Remove(rpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if err := removeFileSync(rpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return cli.Envf(env, "install: %v", err)
 			}
 		} else {
@@ -575,10 +692,11 @@ func uninstallLinks(env *cli.Env, dryRun bool) int {
 			if err != nil {
 				return cli.Envf(env, "install: %v", err)
 			}
-			if err := writeFileAtomic(rpath, raw, 0o644); err != nil {
-				return cli.Envf(env, "install: %v", err)
+			if err := installReceiptWrite(rpath, raw, 0o644); err != nil {
+				return cli.Envf(env, "install: write receipt: %v", err)
 			}
 		}
+		tx.committed = true
 	}
 	if err := writeJSON(env.Stdout, res); err != nil {
 		return cli.Envf(env, "install: %v", err)

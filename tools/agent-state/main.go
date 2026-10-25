@@ -135,9 +135,17 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
+	home, err := canonicalPath(home)
+	if err != nil {
+		return config{}, errors.New("resolve home directory")
+	}
 	cfgPath := getenv("AGENT_DRY_CONFIG")
 	if cfgPath == "" {
 		cfgPath = filepath.Join(home, ".config", "agent-dry", "config.json")
+	}
+	cfgPath, err = canonicalPath(cfgPath)
+	if err != nil {
+		return config{}, errors.New("resolve config path")
 	}
 	c := config{Root: filepath.Join(home, ".local", "state", "agent-execution"), ActiveLedgerDays: 7,
 		ScratchTTL: "72h", EvidenceGrace: "336h", ProjectBudget: 2 * gib, WarnTotal: 8 * gib, FailTotal: 15 * gib}
@@ -165,6 +173,19 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.Root, err = canonicalPath(c.ConfiguredRoot)
 	if err != nil {
 		return c, fmt.Errorf("resolve state root: %w", err)
+	}
+	for i, path := range c.PinnedPaths {
+		c.PinnedPaths[i], err = canonicalPath(path)
+		if err != nil {
+			return c, errors.New("resolve configured pin")
+		}
+	}
+	// Restic transport specifications are not local paths.
+	if c.Archive.Repo != "" && !strings.Contains(c.Archive.Repo, ":") {
+		c.Archive.Repo, err = canonicalPath(c.Archive.Repo)
+		if err != nil {
+			return c, errors.New("resolve archive repository")
+		}
 	}
 	if c.ActiveLedgerDays < 1 {
 		return c, errors.New("active_ledger_days must be positive")

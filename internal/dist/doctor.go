@@ -104,11 +104,16 @@ func diagnose(getenv func(string) string) []Check {
 		add("PASS", "config", "%s (root %s, %d host(s), %d repo(s))", cfgPath, orNone(cfg.Root), len(cfg.Hosts), len(cfg.Repos))
 	}
 
-	root, rootErr := paths.Root(getenv)
+	root, rootErr := distRoot(getenv)
 	if rootErr != nil {
 		add("FAIL", "root", "%v", rootErr)
 	} else {
 		add("PASS", "root", "%s", root)
+	}
+	stateDir, stateErr := stateDirectory(getenv)
+	if stateErr != nil {
+		stateDir, _ = filepath.Abs(paths.StateDir(getenv))
+		add("FAIL", "state", "%v", stateErr)
 	}
 
 	var tools []*manifest.Tool
@@ -175,7 +180,7 @@ func diagnose(getenv func(string) string) []Check {
 			lp := filepath.Join(prefix, t.Name)
 			expected := t.EntryPath()
 			if t.Language == "go" {
-				expected = goToolTarget(filepath.Join(paths.StateDir(getenv), "go-tools"), t.Name, platform())
+				expected = goToolTarget(filepath.Join(stateDir, "go-tools"), t.Name, platform())
 			}
 			if linked[lp] != expected {
 				missing = append(missing, t.Name)
@@ -202,7 +207,7 @@ func diagnose(getenv func(string) string) []Check {
 	}
 
 	if rootErr == nil {
-		idx := filepath.Join(paths.StateDir(getenv), IndexFile)
+		idx := filepath.Join(stateDir, IndexFile)
 		info, err := os.Stat(idx)
 		if err == nil {
 			var f *os.File

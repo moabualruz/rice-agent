@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -56,7 +55,7 @@ func gitHistoryReasons(path string) ([]string, error) {
 	} else if len(bytes.TrimSpace(stashOut)) != 0 {
 		reasons = append(reasons, "git_stashes_present")
 	}
-	unique := exec.Command(git, "-C", path, "rev-list", "--branches", "--not", "--remotes", "-n", "1")
+	unique := exec.Command(git, "-C", path, "rev-list", "HEAD", "--all", "--not", "--remotes", "-n", "1")
 	unique.Env = env
 	unique.Stderr = io.Discard
 	uniqueOut, err := unique.Output()
@@ -182,9 +181,20 @@ func unique(input []string) []string {
 }
 
 func pathInUse(candidate string, openPaths []string) bool {
-	candidate = filepath.Clean(candidate)
+	resolved, err := canonicalPath(candidate)
+	if err != nil {
+		return true
+	}
+	candidate = resolved
 	for _, p := range openPaths {
-		p = filepath.Clean(p)
+		if !filepath.IsAbs(p) {
+			continue
+		}
+		resolved, err := canonicalPath(p)
+		if err != nil {
+			return true
+		}
+		p = resolved
 		if p == candidate || inside(candidate, p) {
 			return true
 		}
@@ -193,9 +203,16 @@ func pathInUse(candidate string, openPaths []string) bool {
 }
 
 func pinBlocks(path string, pins []pin) bool {
-	path = filepath.Clean(path)
+	resolved, err := canonicalPath(path)
+	if err != nil {
+		return true
+	}
+	path = resolved
 	for _, p := range pins {
-		pinPath := filepath.Clean(p.Path)
+		pinPath, err := canonicalPath(p.Path)
+		if err != nil {
+			return true
+		}
 		if path == pinPath || inside(path, pinPath) || inside(pinPath, path) {
 			return true
 		}
@@ -364,7 +381,11 @@ func ledgerFacts(doc any, cutoff, futureLimit time.Time) (bool, []string) {
 }
 
 func ledgerReferencesPath(refs map[string]bool, candidate string) bool {
-	candidate = filepath.Clean(candidate)
+	resolved, err := canonicalPath(candidate)
+	if err != nil {
+		return true
+	}
+	candidate = resolved
 	for ref := range refs {
 		if strings.HasPrefix(ref, "agent-state://") {
 			refPath := strings.TrimPrefix(ref, "agent-state://")
@@ -374,6 +395,11 @@ func ledgerReferencesPath(refs map[string]bool, candidate string) bool {
 			}
 			continue
 		}
+		resolved, err := canonicalPath(ref)
+		if err != nil {
+			return true
+		}
+		ref = resolved
 		if ref == candidate || strings.HasPrefix(ref, candidate+string(filepath.Separator)) {
 			return true
 		}
@@ -386,53 +412,48 @@ func activeLedgerReferences(cfg config, candidate string) bool {
 	return err != nil || ledgerReferencesPath(refs, candidate)
 }
 
-func protectionReasons(idx registryIndex, path string, openPaths []string, openScanErr error, ledgerRefs map[string]bool) []string {
+// Every planner and mutation uses this seam. There is deliberately no cached
+// or reduced final-check variant that could omit a protection class.
+var protectionCheck = fullProtectionCheck
+
+func fullProtectionCheck(cfg config, idx registryIndex, path string) []string {
 	var reasons []string
+	if err := validateExistingPath(cfg.Root, path); err != nil {
+		return []string{"unsafe_path"}
+	}
+	resolved, err := canonicalPath(path)
+	root, rootErr := canonicalPath(cfg.Root)
+	if err != nil || rootErr != nil || !inside(root, resolved) {
+		return []string{"unsafe_path"}
+	}
 	if pinBlocks(path, idx.Pins) {
 		reasons = append(reasons, "pinned_path")
 	}
-	if openScanErr != nil {
+	if _, err := os.Lstat(path); err == nil {
+		reasons = append(reasons, repoSafety(path)...)
+		locks, lockErr := processLockReasons(path)
+		reasons = append(reasons, locks...)
+		if lockErr != nil {
+			reasons = append(reasons, "unreadable_content")
+		}
+		if _, err := measureTreeWithin(path, cfg.Root); err != nil {
+			reasons = append(reasons, "unreadable_content")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		reasons = append(reasons, "unreadable_content")
+	}
+	// Refresh fast-changing process and ledger observations after Git inspection.
+	open, openErr := safetyOpenPaths()
+	if openErr != nil {
 		reasons = append(reasons, "open_file_scan_unavailable")
-	} else if pathInUse(path, openPaths) {
+	} else if pathInUse(path, open) {
 		reasons = append(reasons, "open_file_or_process_cwd")
 	}
-	if ledgerReferencesPath(ledgerRefs, path) {
+	refs, ledgerErr := collectActiveLedgerRefs(cfg)
+	if ledgerErr != nil && !errors.Is(ledgerErr, os.ErrNotExist) {
+		reasons = append(reasons, "ledger_scan_unavailable")
+	} else if ledgerReferencesPath(refs, path) {
 		reasons = append(reasons, "active_ledger_reference")
-	}
-	return reasons
-}
-
-// Refresh protections after slow content, repository and archive work, while the
-// caller holds the registry lock through the move that these checks authorize.
-func currentProtectionReasons(cfg config, idx registryIndex, path string) []string {
-	open, openErr := safetyOpenPaths()
-	refs, err := collectActiveLedgerRefs(cfg)
-	if err != nil {
-		return []string{"ledger_scan_unavailable"}
-	}
-	return protectionReasons(idx, path, open, openErr, refs)
-}
-
-func safetyReasonsWithRefs(cfg config, idx registryIndex, path string, openPaths []string, openScanErr error, ledgerRefs map[string]bool) []string {
-	reasons := protectionReasons(idx, path, openPaths, openScanErr, ledgerRefs)
-	reasons = append(reasons, repoSafety(path)...)
-	locks, err := processLockReasons(path)
-	reasons = append(reasons, locks...)
-	if err != nil {
-		reasons = append(reasons, "unreadable_content")
-	}
-	if _, err := measureTreeWithin(path, cfg.Root); err != nil {
-		reasons = append(reasons, "unreadable_content")
 	}
 	return unique(reasons)
 }
-
-func safetyReasons(cfg config, idx registryIndex, path string, openPaths []string, openScanErr error) []string {
-	refs, err := collectActiveLedgerRefs(cfg)
-	if err != nil {
-		return []string{"ledger_scan_unavailable"}
-	}
-	return safetyReasonsWithRefs(cfg, idx, path, openPaths, openScanErr, refs)
-}
-
-var _ = fmt.Sprintf
