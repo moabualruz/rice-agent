@@ -5,8 +5,67 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+func TestInstallAndUninstallRespectStateLock(t *testing.T) {
+	for _, action := range []string{"install", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			f := newInstallFixture(t)
+			if code, _, errb := run(t, f.vars, "install"); code != 0 {
+				t.Fatalf("setup: %d %s", code, errb)
+			}
+			before := readFile(t, filepath.Join(f.state, ReceiptFile))
+			lock, err := os.OpenFile(filepath.Join(f.state, "install.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Close()
+			if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+			args := []string{"install"}
+			if action == "uninstall" {
+				args = append(args, "--uninstall")
+			}
+			if code, _, _ := run(t, f.vars, args...); code == 0 {
+				t.Fatal("mutation ignored active install lock")
+			}
+			if got := readFile(t, filepath.Join(f.state, ReceiptFile)); got != before {
+				t.Fatal("locked receipt changed")
+			}
+		})
+	}
+}
+
+func TestInstallAndUninstallRespectSharedPrefixLock(t *testing.T) {
+	for _, action := range []string{"install", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			f := newInstallFixture(t)
+			if code, _, errb := run(t, f.vars, "install"); code != 0 {
+				t.Fatalf("setup: %d %s", code, errb)
+			}
+			before := readFile(t, filepath.Join(f.state, ReceiptFile))
+			unlock, err := lockInstallFile(filepath.Join(f.prefix, ".agent-dry-install.lock"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unlock()
+			args := []string{"install"}
+			if action == "uninstall" {
+				args = append(args, "--uninstall")
+			}
+			if code, _, _ := run(t, f.vars, args...); code == 0 {
+				t.Fatal("mutation ignored shared prefix lock")
+			}
+			if got := readFile(t, filepath.Join(f.state, ReceiptFile)); got != before {
+				t.Fatal("locked receipt changed")
+			}
+		})
+	}
+}
 
 func TestInstallRollsBackBinariesLinksAndReceiptOnWriteFailure(t *testing.T) {
 	f := newInstallFixture(t)

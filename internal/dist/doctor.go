@@ -173,7 +173,11 @@ func diagnose(getenv func(string) string) []Check {
 				continue
 			}
 			lp := filepath.Join(prefix, t.Name)
-			if linked[lp] != t.EntryPath() {
+			expected := t.EntryPath()
+			if t.Language == "go" {
+				expected = goToolTarget(filepath.Join(paths.StateDir(getenv), "go-tools"), t.Name, platform())
+			}
+			if linked[lp] != expected {
 				missing = append(missing, t.Name)
 				continue
 			}

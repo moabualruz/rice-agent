@@ -51,7 +51,10 @@ func goToolEnvironment(goos, goarch string) []string {
 	return append(env, "GOFLAGS=", "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 }
 
-// buildGoTools produces platform binaries outside the source tree for install and bundle.
+func goToolTarget(outputRoot, name, platform string) string {
+	return filepath.Join(outputRoot, name, platform, name)
+}
+
 func goToolDestinations(root, outputRoot, goos, goarch string) (map[string]string, error) {
 	platform := goos + "-" + goarch
 	tools, err := listedGoTools(root, platform)
@@ -60,11 +63,12 @@ func goToolDestinations(root, outputRoot, goos, goarch string) (map[string]strin
 	}
 	destinations := map[string]string{}
 	for _, tool := range tools {
-		destinations[tool.Name] = filepath.Join(outputRoot, tool.Name, platform, tool.Name)
+		destinations[tool.Name] = goToolTarget(outputRoot, tool.Name, platform)
 	}
 	return destinations, nil
 }
 
+// buildGoTools produces platform binaries outside the source tree for install and bundle.
 func buildGoTools(root, outputRoot, goos, goarch, pathEnv string) ([]goToolBinary, error) {
 	platform := goos + "-" + goarch
 	goTools, err := listedGoTools(root, platform)
@@ -75,7 +79,7 @@ func buildGoTools(root, outputRoot, goos, goarch, pathEnv string) ([]goToolBinar
 		return nil, nil
 	}
 	for _, tool := range goTools {
-		target := filepath.Join(outputRoot, tool.Name, platform, tool.Name)
+		target := goToolTarget(outputRoot, tool.Name, platform)
 		if err := rejectGoToolSymlinks(outputRoot, target); err != nil {
 			return nil, err
 		}
@@ -96,7 +100,7 @@ func buildGoTools(root, outputRoot, goos, goarch, pathEnv string) ([]goToolBinar
 		}
 	}()
 	for _, tool := range goTools {
-		target := filepath.Join(outputRoot, tool.Name, platform, tool.Name)
+		target := goToolTarget(outputRoot, tool.Name, platform)
 		packaged := filepath.Join(tool.Dir, "bin", platform, tool.Name)
 		if err := rejectGoToolSymlinks(tool.Dir, packaged); err != nil {
 			return nil, err

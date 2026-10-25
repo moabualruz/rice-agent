@@ -244,6 +244,19 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
+	if !dryRun {
+		unlock, err := lockInstallation(paths.StateDir(env.Getenv))
+		if err != nil {
+			return cli.Envf(env, "install: %v", err)
+		}
+		defer unlock()
+		// Different state directories may still install into the same prefix.
+		unlockPrefix, err := lockInstallFile(filepath.Join(prefix, ".agent-dry-install.lock"))
+		if err != nil {
+			return cli.Envf(env, "install: %v", err)
+		}
+		defer unlockPrefix()
+	}
 	goToolRoot := filepath.Join(paths.StateDir(env.Getenv), "go-tools")
 	binaries := map[string]string{}
 	stagedByName := map[string]string{}
@@ -493,6 +506,13 @@ type uninstallResult struct {
 }
 
 func uninstallLinks(env *cli.Env, dryRun bool) int {
+	if !dryRun {
+		unlock, err := lockInstallation(paths.StateDir(env.Getenv))
+		if err != nil {
+			return cli.Envf(env, "install: %v", err)
+		}
+		defer unlock()
+	}
 	rpath := receiptPath(env.Getenv)
 	r, err := loadReceipt(rpath)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -501,6 +521,13 @@ func uninstallLinks(env *cli.Env, dryRun bool) int {
 	}
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
+	}
+	if !dryRun {
+		unlockPrefix, err := lockInstallFile(filepath.Join(r.Prefix, ".agent-dry-install.lock"))
+		if err != nil {
+			return cli.Envf(env, "install: %v", err)
+		}
+		defer unlockPrefix()
 	}
 	roots := []string{r.Root}
 	if cur, err := paths.Root(env.Getenv); err == nil && cur != r.Root {

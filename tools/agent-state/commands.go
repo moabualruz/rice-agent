@@ -775,6 +775,13 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return usageError(stderr, "evidence requires new, put or close")
 	}
+	// Manifest read-modify-write operations must share the staging lock.
+	return withIndexLock(cfg, func(_ *registryIndex) int {
+		return mutateEvidence(cfg, args, stdout, stderr)
+	})
+}
+
+func mutateEvidence(cfg config, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "new":
 		o, err := parseOptions(args[1:], nil, []string{"goal", "criterion", "source"})
@@ -1424,6 +1431,11 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			target string
 		}
 		var moved []movedPath
+		rollback := func() {
+			for i := len(moved) - 1; i >= 0; i-- {
+				_ = os.Rename(moved[i].target, moved[i].source)
+			}
+		}
 		// Preflight every destination before moving any lease.
 		for _, entry := range items {
 			rel, _ := filepath.Rel(cfg.Root, entry.Path)
@@ -1438,12 +1450,18 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			}
 		}
 		for _, entry := range items {
+			// Other candidates and repo checks may take time. Rebind content and
+			// external protections at each move, not just at batch preflight.
+			fingerprint, hashErr := treeFingerprint(entry.Path)
+			if hashErr != nil || fingerprint != entry.TreeSHA256 || len(currentProtectionReasons(cfg, *idx, entry.Path)) != 0 {
+				rollback()
+				fmt.Fprintln(stderr, "agent-state: scratch changed or became protected before staging")
+				return exitBlocked
+			}
 			rel, _ := filepath.Rel(cfg.Root, entry.Path)
 			dst := filepath.Join(trash, rel)
 			if err := os.Rename(entry.Path, dst); err != nil {
-				for i := len(moved) - 1; i >= 0; i-- {
-					_ = os.Rename(moved[i].target, moved[i].source)
-				}
+				rollback()
 				fmt.Fprintln(stderr, "agent-state: move to trash failed")
 				return exitEnv
 			}
@@ -1459,9 +1477,7 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			}
 		}
 		if err := saveIndex(cfg, *idx); err != nil {
-			for i := len(moved) - 1; i >= 0; i-- {
-				_ = os.Rename(moved[i].target, moved[i].source)
-			}
+			rollback()
 			return exitEnv
 		}
 		receipt := map[string]any{"plan_id": id, "action": "delete_scratch", "completed_at": time.Now().UTC().Format(time.RFC3339), "trash_path": trash, "items": items}

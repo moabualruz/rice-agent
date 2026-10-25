@@ -270,19 +270,21 @@ func collectActiveLedgerRefs(cfg config) (map[string]bool, error) {
 		if walkErr != nil {
 			return errors.New("ledger scan encountered an unreadable path")
 		}
+		rel, err := filepath.Rel(cfg.Root, path)
+		if err != nil {
+			return errors.New("ledger scan encountered an invalid path")
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
 		if d.Type()&fs.ModeSymlink != 0 {
-			rel, err := filepath.Rel(cfg.Root, path)
-			if err != nil {
-				return errors.New("ledger scan encountered an invalid path")
-			}
-			parts := strings.Split(filepath.ToSlash(rel), "/")
 			if len(parts) == 1 && parts[0] != "_registry" && parts[0] != "_cas" || len(parts) == 2 && filepath.Ext(path) == ".json" {
 				return errors.New("ledger scan encountered a symlinked ledger path")
 			}
 			return nil
 		}
 		if d.IsDir() {
-			if path != cfg.Root && (d.Name() == "evidence" || d.Name() == "scratch" || d.Name() == "_registry" || d.Name() == "_cas" || d.Name() == "ledger-history") {
+			// Reserved root storage and project subtrees cannot contain live ledgers.
+			// Project names themselves may equal any of the subtree names.
+			if len(parts) == 1 && (parts[0] == "_registry" || parts[0] == "_cas") || len(parts) == 2 && (parts[1] == "evidence" || parts[1] == "scratch" || parts[1] == "ledger-history") {
 				return filepath.SkipDir
 			}
 			info, err := d.Info()
@@ -295,11 +297,7 @@ func collectActiveLedgerRefs(cfg config) (map[string]bool, error) {
 			}
 			return nil
 		}
-		rel, err := filepath.Rel(cfg.Root, path)
-		if err != nil {
-			return errors.New("ledger scan encountered an invalid path")
-		}
-		if len(strings.Split(filepath.ToSlash(rel), "/")) != 2 || filepath.Ext(path) != ".json" {
+		if len(parts) != 2 || filepath.Ext(path) != ".json" {
 			return nil
 		}
 		info, err := d.Info()
@@ -388,7 +386,7 @@ func activeLedgerReferences(cfg config, candidate string) bool {
 	return err != nil || ledgerReferencesPath(refs, candidate)
 }
 
-func safetyReasonsWithRefs(cfg config, idx registryIndex, path string, openPaths []string, openScanErr error, ledgerRefs map[string]bool) []string {
+func protectionReasons(idx registryIndex, path string, openPaths []string, openScanErr error, ledgerRefs map[string]bool) []string {
 	var reasons []string
 	if pinBlocks(path, idx.Pins) {
 		reasons = append(reasons, "pinned_path")
@@ -398,14 +396,30 @@ func safetyReasonsWithRefs(cfg config, idx registryIndex, path string, openPaths
 	} else if pathInUse(path, openPaths) {
 		reasons = append(reasons, "open_file_or_process_cwd")
 	}
+	if ledgerReferencesPath(ledgerRefs, path) {
+		reasons = append(reasons, "active_ledger_reference")
+	}
+	return reasons
+}
+
+// Refresh protections after slow content, repository and archive work, while the
+// caller holds the registry lock through the move that these checks authorize.
+func currentProtectionReasons(cfg config, idx registryIndex, path string) []string {
+	open, openErr := safetyOpenPaths()
+	refs, err := collectActiveLedgerRefs(cfg)
+	if err != nil {
+		return []string{"ledger_scan_unavailable"}
+	}
+	return protectionReasons(idx, path, open, openErr, refs)
+}
+
+func safetyReasonsWithRefs(cfg config, idx registryIndex, path string, openPaths []string, openScanErr error, ledgerRefs map[string]bool) []string {
+	reasons := protectionReasons(idx, path, openPaths, openScanErr, ledgerRefs)
 	reasons = append(reasons, repoSafety(path)...)
 	locks, err := processLockReasons(path)
 	reasons = append(reasons, locks...)
 	if err != nil {
 		reasons = append(reasons, "unreadable_content")
-	}
-	if ledgerReferencesPath(ledgerRefs, path) {
-		reasons = append(reasons, "active_ledger_reference")
 	}
 	if _, err := measureTreeWithin(path, cfg.Root); err != nil {
 		reasons = append(reasons, "unreadable_content")

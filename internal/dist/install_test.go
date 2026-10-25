@@ -421,6 +421,34 @@ func TestDoctor(t *testing.T) {
 	}
 }
 
+func TestDoctorRecognizesInstalledGoToolStatePath(t *testing.T) {
+	f := newInstallFixture(t)
+	writeFile(t, f.vars["AGENT_DRY_CONFIG"], `{"root": "`+f.root+`"}`, 0o644)
+	name := "dfx-go-doctor"
+	addGoToolFixture(t, f.root, name)
+	manifestPath := filepath.Join(f.root, "tools", name, "tool.json")
+	manifest := strings.Replace(readFile(t, manifestPath), `"test":"go test ."`, `"requires":["bash"],"test":"go test ."`, 1)
+	writeFile(t, manifestPath, manifest, 0o644)
+	writeFile(t, filepath.Join(f.root, "tools", name, "bin", platform(), name), "#!/bin/sh\necho packaged\n", 0o755)
+
+	if code, _, errb := run(t, f.vars, "install"); code != 0 {
+		t.Fatalf("install: %d %s", code, errb)
+	}
+	code, out, _ := run(t, f.vars, "doctor")
+	if code != 0 || !strings.Contains(out, "doctor: healthy") {
+		t.Fatalf("doctor after Go tool install: %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "PASS links:") || strings.Contains(out, "FAIL tools:") {
+		t.Fatalf("doctor reported an invalid Go tool link:\n%s", out)
+	}
+	manifest = strings.Replace(manifest, `"requires":["bash"]`, `"requires":["dfx-missing-go-dependency"]`, 1)
+	writeFile(t, manifestPath, manifest, 0o644)
+	code, out, _ = run(t, f.vars, "doctor")
+	if code == 0 || !strings.Contains(out, "FAIL requires: dfx-missing-go-dependency") {
+		t.Fatalf("Go tool dependency checks were skipped: %d\n%s", code, out)
+	}
+}
+
 func TestDoctorRequiredCommands(t *testing.T) {
 	f := newInstallFixture(t)
 	writeFile(t, f.vars["AGENT_DRY_CONFIG"], `{"root": "`+f.root+`"}`, 0o644)
