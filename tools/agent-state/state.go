@@ -47,6 +47,7 @@ type fileRecord struct {
 }
 type evidenceManifest struct {
 	Schema     string       `json:"schema"`
+	Kind       string       `json:"kind,omitempty"`
 	ID         string       `json:"id"`
 	Project    string       `json:"project"`
 	GoalID     string       `json:"goal_id"`
@@ -78,13 +79,14 @@ type registryIndex struct {
 	RemovedConfiguredPins []string `json:"removed_configured_pins,omitempty"`
 }
 type planEntry struct {
-	Path           string   `json:"path"`
-	Class          string   `json:"class"`
-	Bytes          int64    `json:"bytes"`
-	Action         string   `json:"action"`
-	Reasons        []string `json:"blocked_reasons,omitempty"`
-	ManifestSHA256 string   `json:"manifest_sha256,omitempty"`
-	TreeSHA256     string   `json:"tree_sha256,omitempty"`
+	Path           string             `json:"path"`
+	Class          string             `json:"class"`
+	Bytes          int64              `json:"bytes"`
+	Action         string             `json:"action"`
+	Reasons        []string           `json:"blocked_reasons,omitempty"`
+	ManifestSHA256 string             `json:"manifest_sha256,omitempty"`
+	TreeSHA256     string             `json:"tree_sha256,omitempty"`
+	Migration      *migrationEvidence `json:"migration,omitempty"`
 }
 type gcPlan struct {
 	Schema        string      `json:"schema"`
@@ -134,7 +136,7 @@ func validatePlan(plan gcPlan) error {
 	if !strings.HasPrefix(plan.Nonce, "nonce-") || len(plan.Digest) != sha256.Size*2 {
 		return errors.New("plan integrity metadata is missing")
 	}
-	if plan.Action != "" && plan.Action != "archive_retention" {
+	if plan.Action != "" && plan.Action != "archive_retention" && plan.Action != "migrate" {
 		return errors.New("unsupported plan action")
 	}
 	if plan.Action == "archive_retention" {

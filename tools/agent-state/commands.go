@@ -233,55 +233,49 @@ type lintFinding struct {
 }
 
 func evidenceDirs(cfg config, only string) ([]string, error) {
-	rootDevice, err := safeRootDevice(cfg.Root)
-	if err != nil {
-		return nil, err
+	var out []string
+	err := visitEvidenceDirs(cfg, only, func(path string, err error) error {
+		if err == nil {
+			out = append(out, path)
+		}
+		return err
+	})
+	return out, err
+}
+
+// Inventory callers can report an unsafe or unreadable directory and continue.
+func visitEvidenceDirs(cfg config, only string, visit func(string, error) error) error {
+	if _, err := safeRootDevice(cfg.Root); err != nil {
+		return err
 	}
 	entries, err := os.ReadDir(cfg.Root)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var out []string
 	for _, e := range entries {
-		if e.Type()&fs.ModeSymlink != 0 {
-			continue
-		}
-		if !e.IsDir() || e.Name() == "_registry" || e.Name() == "_cas" {
+		if e.Type()&fs.ModeSymlink != 0 || !e.IsDir() || e.Name() == "_registry" || e.Name() == "_cas" {
 			continue
 		}
 		if only != "" && e.Name() != only {
 			continue
 		}
-		project := filepath.Join(cfg.Root, e.Name())
-		projectInfo, err := os.Lstat(project)
-		if err != nil {
-			return nil, err
+		path := rootPath(cfg, e.Name(), "evidence")
+		pathErr := validateExistingPath(cfg.Root, path)
+		if pathErr == nil {
+			info, err := os.Lstat(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err == nil && !info.IsDir() {
+				continue
+			}
+			pathErr = err
 		}
-		projectDevice, err := fileDevice(projectInfo)
-		if err != nil || projectDevice != rootDevice {
-			return nil, errors.New("evidence scan crossed a filesystem boundary")
+		if err := visit(path, pathErr); err != nil {
+			return err
 		}
-		p := filepath.Join(project, "evidence")
-		st, err := os.Lstat(p)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if st.Mode()&fs.ModeSymlink != 0 {
-			return nil, errors.New("evidence directory is a symlink")
-		}
-		if !st.IsDir() {
-			continue
-		}
-		device, err := fileDevice(st)
-		if err != nil || device != rootDevice {
-			return nil, errors.New("evidence scan crossed a filesystem boundary")
-		}
-		out = append(out, p)
 	}
-	return out, nil
+	return nil
 }
 
 func lintEvidence(path string) ([]lintFinding, error) {
