@@ -111,6 +111,7 @@ func usageError(w io.Writer, msg string) int {
 
 type config struct {
 	Root             string `json:"root"`
+	ConfiguredRoot   string `json:"-"`
 	ActiveLedgerDays int    `json:"active_ledger_days"`
 	ScratchTTL       string `json:"scratch_ttl"`
 	EvidenceGrace    string `json:"evidence_grace"`
@@ -160,7 +161,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err != nil {
 		return c, err
 	}
-	c.Root = filepath.Clean(root)
+	c.ConfiguredRoot = filepath.Clean(root)
+	c.Root, err = canonicalPath(c.ConfiguredRoot)
+	if err != nil {
+		return c, fmt.Errorf("resolve state root: %w", err)
+	}
 	if c.ActiveLedgerDays < 1 {
 		return c, errors.New("active_ledger_days must be positive")
 	}
@@ -302,6 +307,9 @@ func requireRepo(cfg config, stderr io.Writer) int {
 }
 
 func checkPlanFlags(o options, stderr io.Writer) int {
+	if o.bools["dry-run"] && o.bools["apply"] {
+		return usageError(stderr, "--dry-run and --apply cannot be combined")
+	}
 	if o.bools["apply"] && o.values["plan"] == "" {
 		fmt.Fprintf(stderr, "%s: --apply requires --plan <id>\n", prog)
 		return exitUsage

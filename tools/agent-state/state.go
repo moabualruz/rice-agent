@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -68,9 +69,10 @@ type archiveRef struct {
 	ManifestSHA256 string `json:"manifest_sha256"`
 }
 type registryIndex struct {
-	Schema string  `json:"schema"`
-	Pins   []pin   `json:"pins,omitempty"`
-	Leases []lease `json:"leases,omitempty"`
+	Schema                string   `json:"schema"`
+	Pins                  []pin    `json:"pins,omitempty"`
+	Leases                []lease  `json:"leases,omitempty"`
+	RemovedConfiguredPins []string `json:"removed_configured_pins,omitempty"`
 }
 type planEntry struct {
 	Path           string   `json:"path"`
@@ -231,12 +233,26 @@ func loadIndex(cfg config) (registryIndex, error) {
 			return idx, errors.New("registry scratch lease path does not match its project and id")
 		}
 	}
-	for _, p := range cfg.PinnedPaths {
-		abs, err := cleanPath(p)
+	for i := range idx.Pins {
+		resolved, err := canonicalPath(idx.Pins[i].Path)
 		if err != nil {
 			return idx, err
 		}
-		if !hasPin(idx.Pins, abs) {
+		idx.Pins[i].Path = resolved
+	}
+	for i := range idx.RemovedConfiguredPins {
+		resolved, err := canonicalPath(idx.RemovedConfiguredPins[i])
+		if err != nil {
+			return idx, err
+		}
+		idx.RemovedConfiguredPins[i] = resolved
+	}
+	for _, p := range cfg.PinnedPaths {
+		abs, err := canonicalPath(p)
+		if err != nil {
+			return idx, err
+		}
+		if !slices.Contains(idx.RemovedConfiguredPins, abs) && !hasPin(idx.Pins, abs) {
 			idx.Pins = append(idx.Pins, pin{Path: abs, Reason: "configured pin"})
 		}
 	}

@@ -509,7 +509,7 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		if len(o.pos) != 1 || strings.TrimSpace(o.values["reason"]) == "" {
 			return usageError(stderr, "pin add <path> --reason <text>")
 		}
-		p, err := cleanPath(o.pos[0])
+		p, err := canonicalPath(o.pos[0])
 		if err != nil {
 			return usageError(stderr, err.Error())
 		}
@@ -518,6 +518,14 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stdout, "pin already exists")
 				return exitOK
 			}
+			// Only an explicit add reverses an explicit configured-pin removal.
+			var removed []string
+			for _, path := range idx.RemovedConfiguredPins {
+				if path != p {
+					removed = append(removed, path)
+				}
+			}
+			idx.RemovedConfiguredPins = removed
 			idx.Pins = append(idx.Pins, pin{Path: p, Reason: o.values["reason"], Added: time.Now().UTC().Format(time.RFC3339)})
 			if err := saveIndex(cfg, *idx); err != nil {
 				fmt.Fprintf(stderr, "%s: save pin: %v\n", prog, err)
@@ -535,23 +543,37 @@ func pinCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		if len(o.pos) != 1 {
 			return usageError(stderr, "pin rm <path>")
 		}
-		p, err := cleanPath(o.pos[0])
+		p, err := canonicalPath(o.pos[0])
 		if err != nil {
 			return usageError(stderr, err.Error())
 		}
 		return withIndexLock(cfg, func(idx *registryIndex) int {
-			for i, value := range idx.Pins {
-				if value.Path == p {
-					idx.Pins = append(idx.Pins[:i], idx.Pins[i+1:]...)
-					if err := saveIndex(cfg, *idx); err != nil {
-						return exitEnv
-					}
-					fmt.Fprintf(stdout, "unpinned %s\n", p)
-					return exitOK
+			if !hasPin(idx.Pins, p) {
+				fmt.Fprintln(stderr, "agent-state: pin not found")
+				return exitNegative
+			}
+			var kept []pin
+			for _, value := range idx.Pins {
+				if value.Path != p {
+					kept = append(kept, value)
 				}
 			}
-			fmt.Fprintln(stderr, "agent-state: pin not found")
-			return exitNegative
+			idx.Pins = kept
+			for _, configured := range cfg.PinnedPaths {
+				resolved, err := canonicalPath(configured)
+				if err != nil {
+					return exitEnv
+				}
+				if resolved == p {
+					idx.RemovedConfiguredPins = append(idx.RemovedConfiguredPins, p)
+					break
+				}
+			}
+			if err := saveIndex(cfg, *idx); err != nil {
+				return exitEnv
+			}
+			fmt.Fprintf(stdout, "unpinned %s\n", p)
+			return exitOK
 		})
 	}
 	return usageError(stderr, "pin requires add, rm or list")
@@ -566,8 +588,12 @@ func doctorCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		return usageError(stderr, "doctor accepts no arguments")
 	}
 	checks := map[string]string{"root": "ok", "registry": "ok", "git": "missing", "repo-state": "missing", "lsof": "missing", "restic": "missing", "bao-run": "missing"}
-	if st, err := os.Stat(cfg.Root); err != nil || !st.IsDir() {
-		checks["root"] = "missing"
+	if _, err := safeRootDevice(cfg.Root); err != nil {
+		checks["root"] = "invalid"
+	}
+	rootPath := cfg.ConfiguredRoot
+	if rootPath == "" {
+		rootPath = cfg.Root
 	}
 	if _, err := os.Stat(registryPath(cfg)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		checks["registry"] = "unreadable"
@@ -581,10 +607,11 @@ func doctorCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if cfg.Archive.Repo != "" {
 		checks["archive_repo"] = "configured"
 	}
-	result := map[string]any{"checks": checks, "scratch_ttl": cfg.ScratchTTL, "evidence_grace": cfg.EvidenceGrace, "active_ledger_days": cfg.ActiveLedgerDays, "archive_retention_months": cfg.Archive.RetentionMonths, "ledger_retention": "forever"}
+	result := map[string]any{"root_path": rootPath, "resolved_root_path": cfg.Root, "checks": checks, "scratch_ttl": cfg.ScratchTTL, "evidence_grace": cfg.EvidenceGrace, "active_ledger_days": cfg.ActiveLedgerDays, "archive_retention_months": cfg.Archive.RetentionMonths, "ledger_retention": "forever"}
 	if o.bools["json"] {
 		_ = emitJSON(stdout, result)
 	} else {
+		fmt.Fprintf(stdout, "root_path: %s\nresolved_root_path: %s\n", rootPath, cfg.Root)
 		for _, k := range []string{"root", "registry", "git", "repo-state", "lsof", "restic", "bao-run", "archive_repo"} {
 			fmt.Fprintf(stdout, "%s: %s\n", k, checks[k])
 		}
@@ -1346,6 +1373,9 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 				return exitBlocked
 			}
 		}
+		if err := validateExistingPath(cfg.Root, rootPath(cfg, "_registry", "receipts")); err != nil {
+			return exitBlocked
+		}
 		trash := rootPath(cfg, "_registry", "trash", id)
 		type movedPath struct {
 			source string
@@ -1384,6 +1414,11 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			for i := len(moved) - 1; i >= 0; i-- {
 				_ = os.Rename(moved[i].target, moved[i].source)
 			}
+			return exitEnv
+		}
+		receipt := map[string]any{"plan_id": id, "action": "delete_scratch", "completed_at": time.Now().UTC().Format(time.RFC3339), "trash_path": trash, "items": items}
+		if err := writeJSONAtomic(rootPath(cfg, "_registry", "receipts", id+"-gc.json"), receipt, 0o600); err != nil {
+			fmt.Fprintln(stderr, "agent-state: scratch is in trash but the receipt could not be written")
 			return exitEnv
 		}
 		fmt.Fprintf(stdout, "staged %d scratch path(s) in registry trash; purge requires a separate plan\n", len(items))
