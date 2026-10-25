@@ -431,11 +431,6 @@ func fullProtectionCheck(cfg config, idx registryIndex, path string) []string {
 	}
 	if _, err := os.Lstat(path); err == nil {
 		reasons = append(reasons, repoSafety(path)...)
-		locks, lockErr := processLockReasons(path)
-		reasons = append(reasons, locks...)
-		if lockErr != nil {
-			reasons = append(reasons, "unreadable_content")
-		}
 		if _, err := measureTreeWithin(path, cfg.Root); err != nil {
 			reasons = append(reasons, "unreadable_content")
 		}
@@ -454,6 +449,16 @@ func fullProtectionCheck(cfg config, idx registryIndex, path string) []string {
 		reasons = append(reasons, "ledger_scan_unavailable")
 	} else if ledgerReferencesPath(refs, path) {
 		reasons = append(reasons, "active_ledger_reference")
+	}
+	// A process can publish its PID lock while the slower scans are running.
+	if _, err := os.Lstat(path); err == nil {
+		locks, lockErr := processLockReasons(path)
+		reasons = append(reasons, locks...)
+		if lockErr != nil {
+			reasons = append(reasons, "unreadable_content")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		reasons = append(reasons, "unreadable_content")
 	}
 	return unique(reasons)
 }

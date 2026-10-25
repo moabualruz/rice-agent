@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -129,6 +130,127 @@ func TestRound5ArchiveAndRestoreUseFullProtectionChecker(t *testing.T) {
 	}
 	if calls[bundle] < 4 {
 		t.Fatalf("archive and restore protection checks = %d, want preflight and final checks for both", calls[bundle])
+	}
+}
+
+func TestRound6RepeatedBlobPutArchivesAndRestores(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "deduplicated"
+		if legacy {
+			name = "legacy-duplicates"
+		}
+		t.Run(name, func(t *testing.T) { repeatedBlobArchiveRoundTrip(t, legacy) })
+	}
+}
+
+func repeatedBlobArchiveRoundTrip(t *testing.T, legacy bool) {
+	t.Helper()
+	cfg, bundle, _ := archiveFixture(t)
+	manifest := evidenceManifest{Schema: evidenceSchema, ID: "bundle", Project: "alpha", GoalID: "goal", Criterion: "proof", Status: "open"}
+	if err := writeJSONAtomic(filepath.Join(bundle, "manifest.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(t.TempDir(), "blob")
+	putFile(t, input, "same payload")
+	for range 2 {
+		if code := evidenceCommand(cfg, []string{"put", bundle, input, "--role", "blob"}, io.Discard, io.Discard); code != exitOK {
+			t.Fatalf("put code=%d", code)
+		}
+	}
+	manifest, err := readManifest(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Blobs) != 1 {
+		t.Fatalf("repeated content produced %d CAS records, want 1", len(manifest.Blobs))
+	}
+	if legacy {
+		manifest.Blobs = append(manifest.Blobs, manifest.Blobs[0])
+	}
+	manifest.Status = "closed"
+	manifest.ClosedAt = time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	if err := writeJSONAtomic(filepath.Join(bundle, "manifest.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildPlan(cfg, "evidence")
+	if err != nil || len(plan.Candidates) != 1 {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	if err := persistPlan(plan, plansPath(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	blobPath := rootPath(cfg, "_cas", "sha256")
+	var casFile string
+	if err := filepath.WalkDir(blobPath, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			casFile = path
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(bundle, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseExec := archiveExec
+	archiveExec = func(_ string, args []string, _ []string) ([]byte, error) {
+		switch args[0] {
+		case "backup":
+			return []byte(`{"snapshot_id":"aaaaaaaa"}`), nil
+		case "restore":
+			var target string
+			for i, arg := range args {
+				if arg == "--target" {
+					target = args[i+1]
+				}
+			}
+			putFile(t, filepath.Join(target, strings.TrimLeft(bundle, string(filepath.Separator)), "manifest.json"), string(manifestBytes))
+			putFile(t, filepath.Join(target, strings.TrimLeft(casFile, string(filepath.Separator))), "same payload")
+		case "check":
+		default:
+			t.Fatalf("unexpected restic command %q", args[0])
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { archiveExec = baseExec })
+	if code := archiveCommand(cfg, []string{bundle, "--apply", "--plan", plan.ID}, io.Discard, io.Discard); code != exitOK {
+		t.Fatalf("archive code=%d", code)
+	}
+	if err := os.Remove(casFile); err != nil {
+		t.Fatal(err)
+	}
+	if code := restoreCommand(cfg, []string{bundle}, io.Discard, io.Discard); code != exitOK {
+		t.Fatalf("restore code=%d", code)
+	}
+	if restored, err := os.ReadFile(casFile); err != nil || string(restored) != "same payload" {
+		t.Fatalf("restored CAS content=%q err=%v", restored, err)
+	}
+}
+
+func TestRound6RestoreCASAcceptsIdenticalLegacyDuplicatesAndRejectsConflicts(t *testing.T) {
+	oldOpen := safetyOpenPaths
+	safetyOpenPaths = func() ([]string, error) { return nil, nil }
+	t.Cleanup(func() { safetyOpenPaths = oldOpen })
+	cfg := testConfig(t.TempDir())
+	blob := completionBlob(t, cfg)
+	destination := rootPath(cfg, filepath.FromSlash(blob.Path))
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreRoot := t.TempDir()
+	putFile(t, filepath.Join(restoreRoot, strings.TrimLeft(destination, string(filepath.Separator))), string(data))
+	if err := os.Remove(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreCASBlobs(cfg, restoreRoot, []fileRecord{blob, blob}); err != nil {
+		t.Fatalf("identical legacy duplicate rejected: %v", err)
+	}
+	conflict := blob
+	conflict.Bytes++
+	if err := restoreCASBlobs(cfg, restoreRoot, []fileRecord{blob, conflict}); err == nil {
+		t.Fatal("conflicting duplicate accepted")
 	}
 }
 

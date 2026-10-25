@@ -18,6 +18,8 @@ type stateBefore struct {
 	exists bool
 }
 
+var renameStatePath = os.Rename
+
 // Journal only the paths owned by this mutation. Existing payload directories
 // are moved back by the caller; new scaffolding is removed deepest first.
 type stateTransaction struct {
@@ -48,7 +50,7 @@ func (tx *stateTransaction) track(path string) error {
 		b.exists = true
 		b.mode = info.Mode()
 		if info.Mode().IsRegular() {
-			b.data, err = os.ReadFile(path)
+			b.data, err = readStateFile(path)
 		} else if !info.IsDir() {
 			return errors.New("transaction path is not regular")
 		}
@@ -135,7 +137,7 @@ func (tx *stateTransaction) rollback() error {
 				err = nil
 			}
 		} else if b.mode.IsRegular() {
-			current, readErr := os.ReadFile(b.path)
+			current, readErr := readStateFile(b.path)
 			info, statErr := os.Stat(b.path)
 			if readErr != nil || statErr != nil || info.Mode().Perm() != b.mode.Perm() || !bytes.Equal(current, b.data) {
 				err = writeBytesAtomic(b.path, b.data, b.mode.Perm())

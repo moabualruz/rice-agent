@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -93,37 +94,90 @@ func tryLockExisting(path string) (func(), bool, error) {
 	return openInstallLock(path, false)
 }
 
-func lockInstallPaths(stateDir, prefix string) (func(), error) {
-	stateLock := filepath.Join(stateDir, "install.lock")
-	prefixLock := filepath.Join(prefix, ".agent-dry-install.lock")
-	if err := validateInstallLockPath(stateLock); err != nil {
+// Acquire the entire directory set in fslock's global ancestor order, then
+// existing legacy lock files in lexical order. Never extend a held lock set.
+func lockInstallPaths(stateDir string, prefixes ...string) (func(), error) {
+	stateDir, err := resolvedPath(stateDir, "")
+	if err != nil {
 		return nil, err
 	}
-	if err := validateInstallLockPath(prefixLock); err != nil {
-		return nil, err
+	directories := []string{stateDir}
+	legacy := map[string]bool{filepath.Join(stateDir, "install.lock"): true}
+	for _, prefix := range prefixes {
+		prefix, err := resolvedPath(prefix, "")
+		if err != nil {
+			return nil, err
+		}
+		directories = append(directories, prefix)
+		legacy[filepath.Join(prefix, ".agent-dry-install.lock")] = true
 	}
-	unlockDirectories, err := fslock.Lock([]string{stateDir, prefix}, 3*time.Second)
+	lockFiles := make([]string, 0, len(legacy))
+	for path := range legacy {
+		if err := validateInstallLockPath(path); err != nil {
+			return nil, err
+		}
+		lockFiles = append(lockFiles, path)
+	}
+	sort.Strings(lockFiles)
+	unlockDirectories, err := fslock.Lock(directories, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("installation is busy: %w", err)
 	}
 	unlocks := []func(){unlockDirectories}
-	for _, path := range []string{stateLock, prefixLock} {
+	release := func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}
+	for _, path := range lockFiles {
 		unlock, exists, err := tryLockExisting(path)
 		if err != nil {
-			for i := len(unlocks) - 1; i >= 0; i-- {
-				unlocks[i]()
-			}
+			release()
 			return nil, err
 		}
 		if exists {
 			unlocks = append(unlocks, unlock)
 		}
 	}
-	return func() {
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
-		}
-	}, nil
+	return release, nil
+}
+
+// The first receipt is only a routing hint. When it names another prefix,
+// release everything and acquire the union before reloading authoritative data.
+// The returned locks must outlive transaction commit or rollback.
+func lockInstallReceipt(stateDir, prefix string) (*Receipt, func(), error) {
+	unlock, err := lockInstallPaths(stateDir, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	path := filepath.Join(stateDir, ReceiptFile)
+	r, err := loadReceipt(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, unlock, nil
+	}
+	if err != nil {
+		unlock()
+		return nil, nil, err
+	}
+	if r.Prefix == prefix {
+		return r, unlock, nil
+	}
+	former := r.Prefix
+	unlock()
+	unlock, err = lockInstallPaths(stateDir, prefix, former)
+	if err != nil {
+		return nil, nil, err
+	}
+	r, err = loadReceipt(path)
+	if err != nil {
+		unlock()
+		return nil, nil, err
+	}
+	if r.Prefix != former {
+		unlock()
+		return nil, nil, errors.New("receipt prefix changed while acquiring installation locks")
+	}
+	return r, unlock, nil
 }
 
 func lockInstallFile(path string) (func(), error) {

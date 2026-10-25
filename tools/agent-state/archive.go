@@ -314,6 +314,9 @@ func archiveBundle(cfg config, bundle string, m *evidenceManifest, planned planE
 	for _, blob := range m.Blobs {
 		args = append(args, rootPath(cfg, filepath.FromSlash(blob.Path)))
 	}
+	if len(protectionCheck(cfg, *idx, bundle)) != 0 {
+		return errArchiveBlocked
+	}
 	out, err := runRestic(cfg, args...)
 	if err != nil {
 		return err
@@ -405,9 +408,6 @@ func stageArchivedBundle(cfg config, bundle string, m *evidenceManifest, idx reg
 	rollback := func(cause error) error {
 		return errors.Join(cause, tx.rollback())
 	}
-	if len(protectionCheck(cfg, idx, bundle)) != 0 {
-		return rollback(errArchiveBlocked)
-	}
 	currentTree, err := treeFingerprint(bundle)
 	if err != nil || currentTree != expectedTree {
 		return rollback(errArchiveBlocked)
@@ -415,11 +415,14 @@ func stageArchivedBundle(cfg config, bundle string, m *evidenceManifest, idx reg
 	if err := tx.mkdir(filepath.Dir(trash)); err != nil {
 		return rollback(err)
 	}
-	if err := os.Rename(bundle, trash); err != nil {
+	if len(protectionCheck(cfg, idx, bundle)) != 0 {
+		return rollback(errArchiveBlocked)
+	}
+	if err := renameStatePath(bundle, trash); err != nil {
 		return rollback(err)
 	}
-	if err := os.Rename(stage, bundle); err != nil {
-		restoreErr := os.Rename(trash, bundle)
+	if err := renameStatePath(stage, bundle); err != nil {
+		restoreErr := renameStatePath(trash, bundle)
 		return rollback(errors.Join(err, restoreErr))
 	}
 	tx.commit()
@@ -485,8 +488,33 @@ func compareRestored(source, target string, before map[string]string) error {
 	return nil
 }
 
-func compareRestoredBlobs(cfg config, target string, blobs []fileRecord) error {
+func uniqueCASRecords(blobs []fileRecord) ([]fileRecord, error) {
+	byHash := make(map[string]fileRecord, len(blobs))
+	byPath := make(map[string]fileRecord, len(blobs))
+	unique := make([]fileRecord, 0, len(blobs))
 	for _, item := range blobs {
+		if previous, ok := byHash[item.SHA256]; ok {
+			if previous.Path != item.Path || previous.Bytes != item.Bytes {
+				return nil, errors.New("conflicting duplicate CAS blob")
+			}
+			continue
+		}
+		if previous, ok := byPath[item.Path]; ok && (previous.SHA256 != item.SHA256 || previous.Bytes != item.Bytes) {
+			return nil, errors.New("conflicting duplicate CAS blob path")
+		}
+		byHash[item.SHA256] = item
+		byPath[item.Path] = item
+		unique = append(unique, item)
+	}
+	return unique, nil
+}
+
+func compareRestoredBlobs(cfg config, target string, blobs []fileRecord) error {
+	unique, err := uniqueCASRecords(blobs)
+	if err != nil {
+		return err
+	}
+	for _, item := range unique {
 		path := filepath.Join(target, filepath.FromSlash(strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(rootPath(cfg, filepath.FromSlash(item.Path)), string(filepath.Separator))), "/")))
 		if err := validateExistingPath(target, path); err != nil {
 			return err
@@ -913,9 +941,6 @@ func restoreCommandLocked(cfg config, args []string, stdout, stderr io.Writer, i
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return rollbackCode(exitEnv)
 		}
-		if reasons := protectionCheck(cfg, *idx, bundle); len(reasons) != 0 {
-			return rollbackCode(exitBlocked)
-		}
 		current, err := treeFingerprint(bundle)
 		if err != nil || current != originalTree {
 			return rollbackCode(exitBlocked)
@@ -923,24 +948,27 @@ func restoreCommandLocked(cfg config, args []string, stdout, stderr io.Writer, i
 		if err := tx.mkdir(filepath.Dir(trash)); err != nil {
 			return rollbackCode(exitEnv)
 		}
-		if err := os.Rename(bundle, trash); err != nil {
+		if reasons := protectionCheck(cfg, *idx, bundle); len(reasons) != 0 {
+			return rollbackCode(exitBlocked)
+		}
+		if err := renameStatePath(bundle, trash); err != nil {
 			return rollbackCode(exitEnv)
 		}
-		if err := os.Rename(restored, bundle); err != nil {
-			restoreErr := os.Rename(trash, bundle)
+		if err := renameStatePath(restored, bundle); err != nil {
+			restoreErr := renameStatePath(trash, bundle)
 			if restoreErr != nil {
 				fmt.Fprintln(stderr, "agent-state: original archive stub could not be restored")
 			}
 			return rollbackCode(exitEnv)
 		}
 	} else {
-		if len(protectionCheck(cfg, *idx, target)) != 0 {
-			return rollbackCode(exitBlocked)
-		}
 		if err := validateRestoreTarget(cfg.Root, target, false); err != nil {
 			return rollbackCode(exitBlocked)
 		}
-		if err := os.Rename(restored, target); err != nil {
+		if len(protectionCheck(cfg, *idx, target)) != 0 {
+			return rollbackCode(exitBlocked)
+		}
+		if err := renameStatePath(restored, target); err != nil {
 			return rollbackCode(exitEnv)
 		}
 	}
@@ -1029,16 +1057,15 @@ func verifyRestoredManifest(cfg config, bundlePath, restoreTarget string, m evid
 }
 
 func validateCASDestinations(cfg config, blobs []fileRecord) error {
-	seen := make(map[string]bool, len(blobs))
-	for _, item := range blobs {
+	unique, err := uniqueCASRecords(blobs)
+	if err != nil {
+		return err
+	}
+	for _, item := range unique {
 		if !safeRelativePath(item.Path) {
 			return errors.New("CAS blob path is unsafe")
 		}
 		destination := rootPath(cfg, filepath.FromSlash(item.Path))
-		if seen[destination] {
-			return errors.New("duplicate CAS blob destination")
-		}
-		seen[destination] = true
 		if err := validateRestoreTarget(cfg.Root, filepath.Dir(destination), true); err != nil {
 			return err
 		}
@@ -1098,6 +1125,11 @@ func restoreCASBlobs(cfg config, restoreRoot string, blobs []fileRecord, transac
 	if tx == nil {
 		return errors.New("restore transaction is nil")
 	}
+	unique, err := uniqueCASRecords(blobs)
+	if err != nil {
+		return err
+	}
+	blobs = unique
 	fail := func(cause error) error {
 		return errors.Join(cause, tx.rollback())
 	}
@@ -1136,14 +1168,14 @@ func restoreCASBlobs(cfg config, restoreRoot string, blobs []fileRecord, transac
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fail(err)
 		}
-		if len(protectionCheck(cfg, idx, destination)) != 0 {
-			return fail(errors.New("CAS destination became protected"))
-		}
 		if err := tx.mkdir(filepath.Dir(destination)); err != nil {
 			return fail(err)
 		}
 		if err := tx.track(destination); err != nil {
 			return fail(err)
+		}
+		if len(protectionCheck(cfg, idx, destination)) != 0 {
+			return fail(errors.New("CAS destination became protected"))
 		}
 		if err := copyFile(destination, sources[i], 0o600); err != nil {
 			return fail(err)

@@ -720,6 +720,12 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 			now := time.Now().UTC()
 			l := lease{ID: id, Project: o.pos[0], Path: path, CreatedAt: now.Format(time.RFC3339), RenewedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(ttl).Format(time.RFC3339)}
 			idx.Leases = append(idx.Leases, l)
+			if err := tx.track(indexPath(cfg)); err != nil {
+				return exitEnv
+			}
+			if len(protectionCheck(cfg, *idx, path)) != 0 {
+				return exitBlocked
+			}
 			if err := tx.saveIndex(*idx); err != nil {
 				return exitEnv
 			}
@@ -750,6 +756,9 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 				if l.ReleasedAt != "" {
 					fmt.Fprintln(stderr, "agent-state: lease already released")
 					return exitNegative
+				}
+				if err := tx.track(indexPath(cfg)); err != nil {
+					return exitEnv
 				}
 				if len(protectionCheck(cfg, *idx, l.Path)) != 0 {
 					return exitBlocked
@@ -827,10 +836,10 @@ func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []
 		path := filepath.Join(project, "evidence", id)
 		now := time.Now().UTC().Format(time.RFC3339)
 		m := evidenceManifest{Schema: evidenceSchema, ID: id, Project: o.pos[0], GoalID: o.values["goal"], Criterion: o.values["criterion"], Status: "open", CreatedAt: now, LastUsedAt: now, Sources: sources}
-		if len(protectionCheck(cfg, idx, path)) != 0 {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			return exitBlocked
 		}
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		if len(protectionCheck(cfg, idx, path)) != 0 {
 			return exitBlocked
 		}
 		if err := tx.mkdir(path); err != nil {
@@ -912,6 +921,9 @@ func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []
 				if err := tx.mkdir(filepath.Dir(cas)); err != nil {
 					return exitEnv
 				}
+				if len(protectionCheck(cfg, idx, cas)) != 0 || len(protectionCheck(cfg, idx, bundle)) != 0 {
+					return exitBlocked
+				}
 				if err := copyFile(cas, o.pos[1], 0o600); err != nil {
 					return exitEnv
 				}
@@ -930,7 +942,10 @@ func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []
 			if err != nil {
 				return exitEnv
 			}
-			m.Blobs = append(m.Blobs, fileRecord{Path: filepath.ToSlash(rel), SHA256: sum, Bytes: n, Role: role})
+			m.Blobs, err = uniqueCASRecords(append(m.Blobs, fileRecord{Path: filepath.ToSlash(rel), SHA256: sum, Bytes: n, Role: role}))
+			if err != nil {
+				return exitBlocked
+			}
 		} else {
 			dir := filepath.Join(bundle, allowed[role])
 			name := filepath.Base(o.pos[1])
@@ -947,14 +962,14 @@ func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []
 			if _, err := os.Lstat(dest); !errors.Is(err, os.ErrNotExist) {
 				return usageError(stderr, "file name already exists in bundle")
 			}
-			if len(protectionCheck(cfg, idx, bundle)) != 0 {
-				return exitBlocked
-			}
 			if err := tx.track(dest); err != nil {
 				return exitEnv
 			}
 			if err := tx.mkdir(dir); err != nil {
 				return exitEnv
+			}
+			if len(protectionCheck(cfg, idx, bundle)) != 0 {
+				return exitBlocked
 			}
 			if err := copyFile(dest, o.pos[1], 0o600); err != nil {
 				return exitEnv
@@ -1012,11 +1027,11 @@ func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []
 		m.Result = result
 		m.ClosedAt = now
 		m.LastUsedAt = now
-		if len(protectionCheck(cfg, idx, bundle)) != 0 {
-			return exitBlocked
-		}
 		if err := tx.track(filepath.Join(bundle, "manifest.json")); err != nil {
 			return exitEnv
+		}
+		if len(protectionCheck(cfg, idx, bundle)) != 0 {
+			return exitBlocked
 		}
 		if err := writeJSONAtomic(filepath.Join(bundle, "manifest.json"), m, 0o600); err != nil {
 			return exitEnv
@@ -1092,7 +1107,10 @@ func sealEvidenceFiles(bundle string, manifest *evidenceManifest) error {
 	manifest.Files = files
 	return nil
 }
-func copyFile(dst, src string, mode fs.FileMode) error {
+
+var copyFile = copyFileContents
+
+func copyFileContents(dst, src string, mode fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -1296,6 +1314,7 @@ func buildPlanLocked(cfg config, class string, idx registryIndex) (gcPlan, error
 					entry.TreeSHA256 = fingerprint
 				}
 			}
+			entry.Reasons = append(entry.Reasons, protectionCheck(cfg, idx, item.Path)...)
 			entry.Reasons = unique(entry.Reasons)
 			if len(entry.Reasons) != 0 {
 				plan.Blocked = append(plan.Blocked, entry)
@@ -1512,7 +1531,7 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 				return
 			}
 			for i := len(moved) - 1; i >= 0; i-- {
-				if err := os.Rename(moved[i].target, moved[i].source); err != nil {
+				if err := renameStatePath(moved[i].target, moved[i].source); err != nil {
 					fmt.Fprintln(stderr, "agent-state: rollback could not restore scratch")
 					code = exitEnv
 				}
@@ -1529,9 +1548,6 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			return exitEnv
 		}
 		for _, entry := range items {
-			if len(protectionCheck(cfg, *idx, entry.Path)) != 0 {
-				return exitBlocked
-			}
 			fingerprint, err := treeFingerprint(entry.Path)
 			if err != nil || fingerprint != entry.TreeSHA256 {
 				return exitBlocked
@@ -1541,7 +1557,10 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			if err := tx.mkdir(filepath.Dir(dst)); err != nil {
 				return exitEnv
 			}
-			if err := os.Rename(entry.Path, dst); err != nil {
+			if len(protectionCheck(cfg, *idx, entry.Path)) != 0 {
+				return exitBlocked
+			}
+			if err := renameStatePath(entry.Path, dst); err != nil {
 				return exitEnv
 			}
 			moved = append(moved, movedPath{entry.Path, dst})

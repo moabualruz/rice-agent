@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -61,11 +62,10 @@ func TestRound5MutationEntryPointsUseFullProtectionUnderLock(t *testing.T) {
 			t.Cleanup(func() { safetyOpenPaths = oldOpen })
 			cfg := testConfig(t.TempDir())
 			var invoke func() int
+			var guardPath string
 			switch entry {
 			case "gc-plan", "gc-apply":
-				var candidate string
-				cfg, candidate = expiredScratch(t)
-				_ = candidate
+				cfg, guardPath = expiredScratch(t)
 				plan, err := buildPlan(cfg, "scratch")
 				if err != nil {
 					t.Fatal(err)
@@ -74,26 +74,15 @@ func TestRound5MutationEntryPointsUseFullProtectionUnderLock(t *testing.T) {
 					t.Fatal(err)
 				}
 				if entry == "gc-plan" {
-					invoke = func() int {
-						_, err := buildPlan(cfg, "scratch")
-						if err != nil {
-							t.Fatal(err)
-						}
-						return exitOK
-					}
+					invoke = func() int { return gcCommand(cfg, []string{"--class", "scratch"}, io.Discard, io.Discard) }
 				} else {
 					invoke = func() int { return applyGC(cfg, plan.ID, plansPath(cfg), io.Discard, io.Discard) }
 				}
 			case "retention-plan", "retention-apply":
 				var plan gcPlan
-				cfg, plan, _, _ = round5RetentionFixture(t)
+				cfg, plan, guardPath, _ = round5RetentionFixture(t)
 				if entry == "retention-plan" {
-					invoke = func() int {
-						if _, err := buildArchiveRetentionPlan(cfg); err != nil {
-							t.Fatal(err)
-						}
-						return exitOK
-					}
+					invoke = func() int { return archiveCommand(cfg, []string{"--policy"}, io.Discard, io.Discard) }
 				} else {
 					invoke = func() int {
 						return archiveCommand(cfg, []string{"--policy", "--apply", "--plan", plan.ID}, io.Discard, io.Discard)
@@ -103,6 +92,7 @@ func TestRound5MutationEntryPointsUseFullProtectionUnderLock(t *testing.T) {
 				var bundle string
 				var plan gcPlan
 				cfg, bundle, plan = archiveFixture(t)
+				guardPath = bundle
 				if entry == "archive" {
 					invoke = func() int {
 						return archiveCommand(cfg, []string{bundle, "--apply", "--plan", plan.ID}, io.Discard, io.Discard)
@@ -146,6 +136,7 @@ func TestRound5MutationEntryPointsUseFullProtectionUnderLock(t *testing.T) {
 						t.Fatal(code)
 					}
 					bundle := strings.TrimSpace(out.String())
+					guardPath = bundle
 					if entry == "evidence-close" {
 						args = []string{"close", bundle, "--result", "pass"}
 					} else {
@@ -160,28 +151,128 @@ func TestRound5MutationEntryPointsUseFullProtectionUnderLock(t *testing.T) {
 				}
 				invoke = func() int { return evidenceCommand(cfg, args, io.Discard, io.Discard) }
 			}
+			var events []string
+			mutations, reads := 0, 0
+			inChecker := false
+			recordRead := func(path string) {
+				if !inChecker {
+					reads++
+					events = append(events, "read:"+path)
+				}
+			}
+			assertFinalCheck := func(operation string, paths ...string) {
+				// Only contiguous checks immediately before this mutation count.
+				// An earlier check, intervening read or previous mutation cannot pass.
+				checked := map[string]bool{}
+				for i := len(events) - 1; i >= 0 && strings.HasPrefix(events[i], "check:"); i-- {
+					checked[strings.TrimPrefix(events[i], "check:")] = true
+				}
+				for _, path := range paths {
+					if !checked[path] {
+						t.Errorf("%s lacks final check for %s after last read: %v", operation, path, events)
+					}
+				}
+				if reads == 0 {
+					t.Errorf("%s did not observe its prerequisite reads", operation)
+				}
+				mutations++
+				events = append(events, "mutation:"+operation)
+			}
+			baseRead, baseHash, baseTree := readStateFile, hashFile, treeFingerprint
+			readStateFile = func(path string) ([]byte, error) {
+				data, err := baseRead(path)
+				recordRead(path)
+				return data, err
+			}
+			hashFile = func(path string) (string, int64, error) {
+				sum, size, err := baseHash(path)
+				recordRead(path)
+				return sum, size, err
+			}
+			treeFingerprint = func(path string) (string, error) {
+				sum, err := baseTree(path)
+				recordRead(path)
+				return sum, err
+			}
+			t.Cleanup(func() { readStateFile, hashFile, treeFingerprint = baseRead, baseHash, baseTree })
 			base := protectionCheck
-			calls := 0
 			protectionCheck = func(c config, idx registryIndex, path string) []string {
-				calls++
 				f, err := os.Open(indexLockAnchor(c))
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer f.Close()
 				err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-				if err == nil {
-					syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-					t.Error("protection check ran outside registry lock")
+				if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+					t.Fatalf("protection check ran outside registry lock: %v", err)
 				}
-				return base(c, idx, path)
+				inChecker = true
+				reasons := base(c, idx, path)
+				inChecker = false
+				events = append(events, "check:"+path)
+				return reasons
 			}
 			t.Cleanup(func() { protectionCheck = base })
-			if code := invoke(); code != exitOK {
-				t.Fatalf("%s code=%d", entry, code)
+			baseWrite := writeStateBytes
+			writeStateBytes = func(path string, data []byte, mode fs.FileMode) error {
+				switch {
+				case (entry == "gc-plan" || entry == "retention-plan") && inside(plansPath(cfg), path):
+					assertFinalCheck("plan write", guardPath)
+				case strings.HasPrefix(entry, "evidence-") && filepath.Base(path) == "manifest.json":
+					assertFinalCheck("manifest write", filepath.Dir(path))
+				case strings.HasPrefix(entry, "scratch-") && path == indexPath(cfg):
+					var idx registryIndex
+					if err := json.Unmarshal(data, &idx); err != nil || len(idx.Leases) != 1 {
+						t.Fatalf("invalid scratch mutation fixture: %v", err)
+					}
+					assertFinalCheck("lease write", idx.Leases[0].Path)
+				default:
+					events = append(events, "auxiliary-write:"+path)
+				}
+				return baseWrite(path, data, mode)
 			}
-			if calls == 0 {
-				t.Fatalf("%s bypassed full protection check", entry)
+			t.Cleanup(func() { writeStateBytes = baseWrite })
+			baseCopy := copyFile
+			copyFile = func(dst, src string, mode fs.FileMode) error {
+				switch entry {
+				case "evidence-put":
+					assertFinalCheck("evidence copy", guardPath)
+				case "evidence-blob":
+					assertFinalCheck("CAS copy", dst, guardPath)
+				case "restore-cas", "restore":
+					assertFinalCheck("CAS restore", dst)
+				default:
+					t.Fatalf("unexpected copy in %s", entry)
+				}
+				return baseCopy(dst, src, mode)
+			}
+			t.Cleanup(func() { copyFile = baseCopy })
+			baseRename := renameStatePath
+			renameStatePath = func(oldPath, newPath string) error {
+				if oldPath == guardPath {
+					assertFinalCheck("payload move", oldPath)
+				} else {
+					// Publishing the replacement completes the same guarded move.
+					events = append(events, "publish:"+newPath)
+				}
+				return baseRename(oldPath, newPath)
+			}
+			t.Cleanup(func() { renameStatePath = baseRename })
+			baseExec := archiveExec
+			archiveExec = func(name string, args []string, env []string) ([]byte, error) {
+				if len(args) > 0 && (args[0] == "backup" || args[0] == "forget") {
+					assertFinalCheck("archive "+args[0], guardPath)
+				} else {
+					recordRead("archive " + strings.Join(args, " "))
+				}
+				return baseExec(name, args, env)
+			}
+			t.Cleanup(func() { archiveExec = baseExec })
+			if code := invoke(); code != exitOK {
+				t.Fatalf("%s code=%d events=%v", entry, code, events)
+			}
+			if mutations == 0 {
+				t.Fatalf("%s did not reach an injected mutation boundary", entry)
 			}
 		})
 	}

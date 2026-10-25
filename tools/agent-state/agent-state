@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# agent-state launcher: builds the Go source next to this file and runs it with the caller's
-# working directory and arguments. Without Go, it runs a prebuilt bin/agent-state beside this file.
+# agent-state launcher: uses a packaged platform binary when present, otherwise builds from source.
 # Scaffolded by agent-dry new; Bash 3.2 compatible.
 set -euo pipefail
 
@@ -15,6 +14,21 @@ while [ -L "$src" ]; do
 done
 here="$(cd -P "$(dirname "$src")" && pwd)"
 
+system="$(uname -s 2>/dev/null || true)"
+machine="$(uname -m 2>/dev/null || true)"
+case "$system" in
+  Darwin) os=darwin ;;
+  Linux) os=linux ;;
+  *) os="" ;;
+esac
+case "$machine" in
+  x86_64|amd64) arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) arch="" ;;
+esac
+if [ -n "$os" ] && [ -n "$arch" ] && [ -x "$here/bin/$os-$arch/agent-state" ]; then
+  exec "$here/bin/$os-$arch/agent-state" "$@"
+fi
 if command -v go >/dev/null 2>&1; then
   out="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/agent-dry/go-bin/agent-state"
   mkdir -p "$(dirname "$out")"
@@ -26,8 +40,5 @@ if command -v go >/dev/null 2>&1; then
   mv -f "$out.$$" "$out"
   exec "$out" "$@"
 fi
-if [ -x "$here/bin/agent-state" ]; then
-  exec "$here/bin/agent-state" "$@"
-fi
-printf '%s: needs go to build from source, or a prebuilt %s\n' "agent-state" "$here/bin/agent-state" >&2
+printf '%s: needs go to build from source, or a prebuilt %s\n' "agent-state" "$here/bin/$os-$arch/agent-state" >&2
 exit 3

@@ -248,7 +248,7 @@ func loadIndex(cfg config) (registryIndex, error) {
 	if statErr == nil && !info.Mode().IsRegular() {
 		return idx, errors.New("registry index is not a regular file")
 	}
-	raw, err := os.ReadFile(indexPath(cfg))
+	raw, err := readStateFile(indexPath(cfg))
 	if errors.Is(statErr, os.ErrNotExist) {
 		err = os.ErrNotExist
 	}
@@ -440,7 +440,7 @@ func readManifest(bundle string) (evidenceManifest, error) {
 	if manifestInfo.Mode()&fs.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() {
 		return m, errors.New("evidence manifest is not a regular file")
 	}
-	raw, err := os.ReadFile(manifestPath)
+	raw, err := readStateFile(manifestPath)
 	if err != nil {
 		return m, err
 	}
@@ -610,7 +610,11 @@ func fileDevice(info os.FileInfo) (uint64, error) {
 	return uint64(stat.Dev), nil
 }
 
-func hashFile(path string) (string, int64, error) {
+// Keep record reads and payload hashing injectable alongside mutation boundaries.
+var readStateFile = os.ReadFile
+var hashFile = hashFileContents
+
+func hashFileContents(path string) (string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
@@ -624,7 +628,9 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
-func treeFingerprint(root string) (string, error) {
+var treeFingerprint = fingerprintTree
+
+func fingerprintTree(root string) (string, error) {
 	rootDevice, err := safeRootDevice(root)
 	if err != nil {
 		return "", err
@@ -715,7 +721,7 @@ func sortEntries(entries []planEntry) {
 }
 
 func readJSONFile(path string, value any) error {
-	raw, err := os.ReadFile(path)
+	raw, err := readStateFile(path)
 	if err != nil {
 		return err
 	}

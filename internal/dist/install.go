@@ -320,13 +320,12 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
-	if !dryRun {
-		unlock, err := lockInstallPaths(stateDir, prefix)
-		if err != nil {
-			return cli.Envf(env, "install: %v", err)
-		}
-		defer unlock()
+	rpath := filepath.Join(stateDir, ReceiptFile)
+	previous, unlock, err := lockInstallReceipt(stateDir, prefix)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
 	}
+	defer unlock()
 	goToolRoot := filepath.Join(stateDir, "go-tools")
 	binaries, err := goToolDestinations(root, goToolRoot, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
@@ -341,14 +340,11 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 			return cli.Envf(env, "install: %v", err)
 		}
 	}
-	rpath := filepath.Join(stateDir, ReceiptFile)
 	prev := map[string]Link{}
-	if r, err := loadReceipt(rpath); err == nil {
-		for _, l := range r.Links {
+	if previous != nil {
+		for _, l := range previous.Links {
 			prev[l.Path] = l
 		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return cli.Envf(env, "install: %v", err)
 	}
 
 	var links []Link
@@ -584,50 +580,14 @@ func uninstallLinks(env *cli.Env, dryRun bool, prefix string) (code int) {
 		return cli.Envf(env, "install: %v", err)
 	}
 	rpath := filepath.Join(stateDir, ReceiptFile)
-	var unlock func()
-	if !dryRun {
-		unlock, err = lockInstallPaths(stateDir, prefix)
-		if err != nil {
-			return cli.Envf(env, "install: %v", err)
-		}
-		defer func() {
-			if unlock != nil {
-				unlock()
-			}
-		}()
-	}
-	r, err := loadReceipt(rpath)
-	if errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(env.Stderr, "agent-dry: install: no receipt at %s; nothing to uninstall\n", rpath)
-		return cli.ExitOK
-	}
+	r, unlock, err := lockInstallReceipt(stateDir, prefix)
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
-	if !dryRun {
-		actualPrefix, err := resolvedPath(r.Prefix, home)
-		if err != nil {
-			return cli.Envf(env, "install: receipt prefix: %v", err)
-		}
-		if actualPrefix != prefix {
-			expectedPrefix := actualPrefix
-			// The first snapshot only routes to the recorded prefix. Discard it
-			// and bind every authoritative field again under both final locks.
-			unlock()
-			unlock = nil
-			unlock, err = lockInstallPaths(stateDir, actualPrefix)
-			if err != nil {
-				return cli.Envf(env, "install: %v", err)
-			}
-			r, err = loadReceipt(rpath)
-			if err != nil {
-				return cli.Envf(env, "install: %v", err)
-			}
-			actualPrefix, err = resolvedPath(r.Prefix, home)
-			if err != nil || actualPrefix != expectedPrefix {
-				return cli.Envf(env, "install: receipt prefix changed during uninstall")
-			}
-		}
+	defer unlock()
+	if r == nil {
+		fmt.Fprintf(env.Stderr, "agent-dry: install: no receipt at %s; nothing to uninstall\n", rpath)
+		return cli.ExitOK
 	}
 	roots := []string{r.Root}
 	if cur, err := distRoot(env.Getenv); err == nil {
