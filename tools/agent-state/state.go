@@ -28,13 +28,14 @@ type pin struct {
 	Added  string `json:"added_at"`
 }
 type lease struct {
-	ID         string `json:"id"`
-	Project    string `json:"project"`
-	Path       string `json:"path"`
-	CreatedAt  string `json:"created_at"`
-	RenewedAt  string `json:"renewed_at"`
-	ExpiresAt  string `json:"expires_at"`
-	ReleasedAt string `json:"released_at,omitempty"`
+	ID          string `json:"id"`
+	Project     string `json:"project"`
+	Path        string `json:"path"`
+	CreatedAt   string `json:"created_at"`
+	RenewedAt   string `json:"renewed_at"`
+	ExpiresAt   string `json:"expires_at"`
+	ReleasedAt  string `json:"released_at,omitempty"`
+	CollectedAt string `json:"collected_at,omitempty"`
 }
 type fileRecord struct {
 	Path   string `json:"path"`
@@ -171,6 +172,18 @@ func validateExistingPath(root, target string) error {
 	if err != nil {
 		return err
 	}
+	var rootDevice uint64
+	if info, statErr := os.Lstat(root); statErr == nil {
+		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+			return errors.New("state root is not a regular directory")
+		}
+		rootDevice, err = fileDevice(info)
+		if err != nil {
+			return err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
 	current := filepath.Clean(root)
 	parts := strings.Split(rel, string(filepath.Separator))
 	for i, part := range parts {
@@ -188,11 +201,37 @@ func validateExistingPath(root, target string) error {
 		if info.Mode()&fs.ModeSymlink != 0 {
 			return errors.New("path traverses a symlink")
 		}
+		if device, err := fileDevice(info); err != nil || device != rootDevice {
+			return errors.New("path crosses a filesystem boundary")
+		}
 		if i < len(parts)-1 && !info.IsDir() {
 			return errors.New("path parent is not a directory")
 		}
 	}
 	return nil
+}
+
+// mkdirState uses a directory handle so a concurrent parent swap cannot escape root.
+func mkdirState(root, target string) error {
+	if err := validateExistingPath(root, target); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	if err := dir.MkdirAll(rel, 0o700); err != nil {
+		return err
+	}
+	return validateExistingPath(root, target)
 }
 
 func loadIndex(cfg config) (registryIndex, error) {
@@ -272,10 +311,10 @@ func withIndexLock(cfg config, fn func(*registryIndex) int) int {
 	if err := validateExistingPath(cfg.Root, filepath.Dir(lockPath(cfg))); err != nil {
 		return exitBlocked
 	}
-	if err := os.MkdirAll(filepath.Dir(lockPath(cfg)), 0o700); err != nil {
+	if err := mkdirState(cfg.Root, filepath.Dir(lockPath(cfg))); err != nil {
 		return exitEnv
 	}
-	f, err := os.OpenFile(lockPath(cfg), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(lockPath(cfg), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return exitEnv
 	}
@@ -305,7 +344,7 @@ func saveIndex(cfg config, idx registryIndex) error {
 	if err := validateExistingPath(cfg.Root, registryPath(cfg)); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(registryPath(cfg), 0o700); err != nil {
+	if err := mkdirState(cfg.Root, registryPath(cfg)); err != nil {
 		return err
 	}
 	return writeJSONAtomic(indexPath(cfg), idx, 0o600)

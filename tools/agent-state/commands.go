@@ -370,7 +370,7 @@ func isDatabaseDataDir(path string) bool {
 	return false
 }
 
-func scanSecrets(path string) (bool, error) {
+var scanSecrets = func(path string) (bool, error) {
 	bin, err := exec.LookPath("gitleaks")
 	if err != nil {
 		return false, err
@@ -386,6 +386,34 @@ func scanSecrets(path string) (bool, error) {
 		return true, nil
 	}
 	return false, errors.New("gitleaks execution failed")
+}
+
+func blobArchiveReasons(cfg config, blobs []fileRecord) []string {
+	var reasons []string
+	for _, blob := range blobs {
+		path := rootPath(cfg, filepath.FromSlash(blob.Path))
+		if err := validateExistingPath(cfg.Root, path); err != nil {
+			reasons = append(reasons, "unsafe_cas_blob")
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			reasons = append(reasons, "unreadable_cas_blob")
+			continue
+		}
+		sum, n, err := hashFile(path)
+		if err != nil || sum != blob.SHA256 || n != blob.Bytes {
+			reasons = append(reasons, "cas_blob_hash_mismatch")
+			continue
+		}
+		found, err := scanSecrets(path)
+		if err != nil {
+			reasons = append(reasons, "secret_scan_unavailable")
+		} else if found {
+			reasons = append(reasons, "secret_finding_redacted")
+		}
+	}
+	return unique(reasons)
 }
 
 func archiveEvidenceReasons(bundle string, lint func(string) ([]lintFinding, error), scan func(string) (bool, error)) []string {
@@ -634,7 +662,11 @@ func ledgerCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return usageError(stderr, err.Error())
 	}
-	fmt.Fprintln(stdout, filepath.Join(p, args[2]+".json"))
+	path := filepath.Join(p, args[2]+".json")
+	if err := validateExistingPath(cfg.Root, path); err != nil {
+		return usageError(stderr, "ledger path is unsafe")
+	}
+	fmt.Fprintln(stdout, path)
 	return exitOK
 }
 
@@ -671,7 +703,7 @@ func scratchCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return withIndexLock(cfg, func(idx *registryIndex) int {
-			if err := os.MkdirAll(path, 0o700); err != nil {
+			if err := mkdirState(cfg.Root, path); err != nil {
 				return exitEnv
 			}
 			now := time.Now().UTC()
@@ -774,7 +806,7 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		path := filepath.Join(project, "evidence", id)
 		now := time.Now().UTC().Format(time.RFC3339)
 		m := evidenceManifest{Schema: evidenceSchema, ID: id, Project: o.pos[0], GoalID: o.values["goal"], Criterion: o.values["criterion"], Status: "open", CreatedAt: now, LastUsedAt: now, Sources: sources}
-		if err := os.MkdirAll(path, 0o700); err != nil {
+		if err := mkdirState(cfg.Root, path); err != nil {
 			return exitEnv
 		}
 		if err := writeJSONAtomic(filepath.Join(path, "manifest.json"), m, 0o600); err != nil {
@@ -798,6 +830,9 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		bundle, err := cleanPath(o.pos[0])
 		if err != nil || !inside(cfg.Root, bundle) {
 			return usageError(stderr, "bundle must be inside the configured state root")
+		}
+		if err := validateExistingPath(cfg.Root, bundle); err != nil {
+			return usageError(stderr, "bundle path is unsafe")
 		}
 		m, err := readManifest(bundle)
 		if err != nil || m.Status != "open" {
@@ -828,8 +863,11 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 				return exitEnv
 			}
 			cas := rootPath(cfg, "_cas", "sha256", sum[:2], sum)
+			if err := validateExistingPath(cfg.Root, cas); err != nil {
+				return exitBlocked
+			}
 			if _, err := os.Stat(cas); errors.Is(err, os.ErrNotExist) {
-				if err := os.MkdirAll(filepath.Dir(cas), 0o700); err != nil {
+				if err := mkdirState(cfg.Root, filepath.Dir(cas)); err != nil {
 					return exitEnv
 				}
 				if err := copyFile(cas, o.pos[1], 0o600); err != nil {
@@ -850,7 +888,7 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 			m.Blobs = append(m.Blobs, fileRecord{Path: filepath.ToSlash(rel), SHA256: sum, Bytes: n, Role: role})
 		} else {
 			dir := filepath.Join(bundle, allowed[role])
-			if err := os.MkdirAll(dir, 0o700); err != nil {
+			if err := mkdirState(cfg.Root, dir); err != nil {
 				return exitEnv
 			}
 			name := filepath.Base(o.pos[1])
@@ -894,6 +932,9 @@ func evidenceCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		result := o.values["result"]
 		if result != "pass" && result != "fail" && result != "setup-failure" {
 			return usageError(stderr, "invalid evidence result")
+		}
+		if err := validateExistingPath(cfg.Root, bundle); err != nil {
+			return usageError(stderr, "bundle path is unsafe")
 		}
 		m, err := readManifest(bundle)
 		if err != nil || m.Status != "open" {
@@ -1151,7 +1192,7 @@ func buildPlan(cfg config, class string) (gcPlan, error) {
 	open, openErr := safetyOpenPaths()
 	if class == "" || class == "scratch" {
 		for _, item := range idx.Leases {
-			if item.ReleasedAt != "" {
+			if item.CollectedAt != "" {
 				continue
 			}
 			expires, err := time.Parse(time.RFC3339, item.ExpiresAt)
@@ -1241,6 +1282,7 @@ func buildPlan(cfg config, class string) (gcPlan, error) {
 						entry.Reasons = append(entry.Reasons, "already_archived")
 					}
 					entry.Reasons = append(entry.Reasons, planEvidenceReasons(bundle)...)
+					entry.Reasons = append(entry.Reasons, blobArchiveReasons(cfg, manifest.Blobs)...)
 					manifestHash, _, hashErr := hashFile(filepath.Join(bundle, "manifest.json"))
 					if hashErr != nil {
 						entry.Reasons = append(entry.Reasons, "unreadable_content")
@@ -1343,7 +1385,7 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			}
 			var leaseFound bool
 			for _, lease := range idx.Leases {
-				if lease.Path != entry.Path || lease.ReleasedAt != "" {
+				if lease.Path != entry.Path || lease.CollectedAt != "" {
 					continue
 				}
 				leaseFound = true
@@ -1382,20 +1424,22 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			target string
 		}
 		var moved []movedPath
+		// Preflight every destination before moving any lease.
 		for _, entry := range items {
 			rel, _ := filepath.Rel(cfg.Root, entry.Path)
 			dst := filepath.Join(trash, rel)
-			if err := validateExistingPath(cfg.Root, filepath.Dir(dst)); err != nil {
+			if err := mkdirState(cfg.Root, filepath.Dir(dst)); err != nil {
 				return exitBlocked
-			}
-			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-				return exitEnv
 			}
 			if _, err := os.Lstat(dst); err == nil {
 				return exitBlocked
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return exitEnv
 			}
+		}
+		for _, entry := range items {
+			rel, _ := filepath.Rel(cfg.Root, entry.Path)
+			dst := filepath.Join(trash, rel)
 			if err := os.Rename(entry.Path, dst); err != nil {
 				for i := len(moved) - 1; i >= 0; i-- {
 					_ = os.Rename(moved[i].target, moved[i].source)
@@ -1405,8 +1449,12 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			}
 			moved = append(moved, movedPath{source: entry.Path, target: dst})
 			for i := range idx.Leases {
-				if idx.Leases[i].Path == entry.Path && idx.Leases[i].ReleasedAt == "" {
-					idx.Leases[i].ReleasedAt = time.Now().UTC().Format(time.RFC3339)
+				if idx.Leases[i].Path == entry.Path {
+					stamp := time.Now().UTC().Format(time.RFC3339)
+					idx.Leases[i].CollectedAt = stamp
+					if idx.Leases[i].ReleasedAt == "" {
+						idx.Leases[i].ReleasedAt = stamp
+					}
 				}
 			}
 		}

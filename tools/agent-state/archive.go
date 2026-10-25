@@ -259,6 +259,10 @@ func archiveCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-state: archive blocked by a redacted secret finding")
 		return exitBlocked
 	}
+	if reasons := blobArchiveReasons(cfg, m.Blobs); len(reasons) > 0 {
+		fmt.Fprintf(stderr, "agent-state: archive blocked by %s\n", strings.Join(reasons, ","))
+		return exitBlocked
+	}
 	if err := archiveBundle(cfg, bundle, &m); err != nil {
 		fmt.Fprintf(stderr, "%s: archive failed; local bundle remains hot when the archive phase has not started\n", prog)
 		return exitNegative
@@ -326,13 +330,13 @@ func archiveBundle(cfg config, bundle string, m *evidenceManifest) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(trash), 0o700); err != nil {
+	if err := mkdirState(cfg.Root, filepath.Dir(trash)); err != nil {
 		return err
 	}
 	if err := os.Rename(bundle, trash); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(bundle, 0o700); err != nil {
+	if err := mkdirState(cfg.Root, bundle); err != nil {
 		_ = os.Rename(trash, bundle)
 		return err
 	}
@@ -393,6 +397,9 @@ func hashTree(root string) (map[string]string, error) {
 func compareRestored(source, target string, before map[string]string) error {
 	rootRel := strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(source, string(filepath.Separator))), "/")
 	restored := filepath.Join(target, filepath.FromSlash(rootRel))
+	if err := validateExistingPath(target, restored); err != nil {
+		return err
+	}
 	actual, err := hashTree(restored)
 	if err != nil {
 		return err
@@ -411,6 +418,9 @@ func compareRestored(source, target string, before map[string]string) error {
 func compareRestoredBlobs(cfg config, target string, blobs []fileRecord) error {
 	for _, item := range blobs {
 		path := filepath.Join(target, filepath.FromSlash(strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(rootPath(cfg, filepath.FromSlash(item.Path)), string(filepath.Separator))), "/")))
+		if err := validateExistingPath(target, path); err != nil {
+			return err
+		}
 		sum, n, err := hashFile(path)
 		if err != nil || sum != item.SHA256 || n != item.Bytes {
 			return errors.New("restored CAS blob hash mismatch")
@@ -528,6 +538,9 @@ func verifySnapshotFiles(cfg config, snapshot string, m evidenceManifest) error 
 	}
 	rootRel := strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(mustBundlePath(cfg, m), string(filepath.Separator))), "/")
 	base := filepath.Join(tmp, filepath.FromSlash(rootRel))
+	if err := validateExistingPath(tmp, base); err != nil {
+		return err
+	}
 	actual, err := hashTree(base)
 	if err != nil {
 		return err
@@ -548,6 +561,9 @@ func verifySnapshotFiles(cfg config, snapshot string, m evidenceManifest) error 
 		cas := rootPath(cfg, filepath.FromSlash(item.Path))
 		casRel := strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(cas, string(filepath.Separator))), "/")
 		path := filepath.Join(tmp, filepath.FromSlash(casRel))
+		if err := validateExistingPath(tmp, path); err != nil {
+			return err
+		}
 		sum, n, err := hashFile(path)
 		if err != nil || sum != item.SHA256 || n != item.Bytes {
 			return errors.New("archived CAS blob failed verification")
@@ -713,6 +729,9 @@ func restoreCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-state: restored archive failed manifest checks")
 		return exitNegative
 	}
+	if err := validateRestoreTarget(cfg.Root, target, target == bundle); err != nil {
+		return exitBlocked
+	}
 	if err := restoreCASBlobs(cfg, tmp, m.Blobs); err != nil {
 		fmt.Fprintln(stderr, "agent-state: CAS blob restore failed")
 		return exitNegative
@@ -736,7 +755,7 @@ func restoreCommand(cfg config, args []string, stdout, stderr io.Writer) int {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return exitEnv
 		}
-		if err := os.MkdirAll(filepath.Dir(trash), 0o700); err != nil {
+		if err := mkdirState(cfg.Root, filepath.Dir(trash)); err != nil {
 			return exitEnv
 		}
 		if err := os.Rename(bundle, trash); err != nil {
@@ -800,6 +819,9 @@ func validateRestoreTarget(root, target string, allowExisting bool) error {
 }
 
 func verifyRestoredManifest(cfg config, bundlePath, restoreTarget string, m evidenceManifest) error {
+	if err := validateExistingPath(restoreTarget, bundlePath); err != nil {
+		return err
+	}
 	restored, err := readManifest(bundlePath)
 	if err != nil || restored.ID != m.ID {
 		return errors.New("restored manifest is invalid")
@@ -821,6 +843,9 @@ func verifyRestoredManifest(cfg config, bundlePath, restoreTarget string, m evid
 	}
 	for _, item := range m.Blobs {
 		path := filepath.Join(restoreTarget, filepath.FromSlash(strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(rootPath(cfg, filepath.FromSlash(item.Path)), string(filepath.Separator))), "/")))
+		if err := validateExistingPath(restoreTarget, path); err != nil {
+			return err
+		}
 		if sum, n, err := hashFile(path); err != nil || sum != item.SHA256 || n != item.Bytes {
 			return errors.New("archived CAS blob mismatch")
 		}
@@ -832,10 +857,16 @@ func restoreCASBlobs(cfg config, restoreRoot string, blobs []fileRecord) error {
 	for _, item := range blobs {
 		source := filepath.Join(restoreRoot, filepath.FromSlash(strings.TrimLeft(filepath.ToSlash(strings.TrimPrefix(rootPath(cfg, filepath.FromSlash(item.Path)), string(filepath.Separator))), "/")))
 		destination := rootPath(cfg, filepath.FromSlash(item.Path))
-		if err := validateRestoreTarget(cfg.Root, destination, true); err != nil {
+		if err := validateRestoreTarget(cfg.Root, filepath.Dir(destination), true); err != nil {
 			return err
 		}
-		if _, err := os.Stat(destination); err == nil {
+		if info, err := os.Lstat(destination); err == nil {
+			if !info.Mode().IsRegular() {
+				return errors.New("existing CAS blob is not a regular file")
+			}
+			if err := validateExistingPath(cfg.Root, destination); err != nil {
+				return err
+			}
 			sha, size, hashErr := hashFile(destination)
 			if hashErr != nil || sha != item.SHA256 || size != item.Bytes {
 				return errors.New("existing CAS blob does not match its manifest")
@@ -844,11 +875,17 @@ func restoreCASBlobs(cfg config, restoreRoot string, blobs []fileRecord) error {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := validateExistingPath(restoreRoot, source); err != nil {
+			return err
+		}
+		if info, err := os.Lstat(source); err != nil || !info.Mode().IsRegular() {
+			return errors.New("restored CAS blob is not a regular file")
+		}
 		sha, size, err := hashFile(source)
 		if err != nil || sha != item.SHA256 || size != item.Bytes {
 			return errors.New("restored CAS blob does not match its manifest")
 		}
-		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		if err := mkdirState(cfg.Root, filepath.Dir(destination)); err != nil {
 			return err
 		}
 		if err := copyFile(destination, source, 0o600); err != nil {

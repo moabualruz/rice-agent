@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/moabualruz/agent-dry/internal/cli"
@@ -73,6 +72,8 @@ type Receipt struct {
 // executable is the running binary; tests replace it.
 var executable = os.Executable
 
+var installReceiptWrite = writeFileAtomic
+
 func platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
 
 func receiptPath(getenv func(string) string) string {
@@ -133,7 +134,8 @@ func desiredLinks(root string, binaries map[string]string, dryRun bool) ([]want,
 		if built := binaries[t.Name]; built != "" {
 			target = built
 		}
-		if !dryRun || binaries[t.Name] == "" {
+		// Go entries are validated in staging, not at their future stable paths.
+		if binaries[t.Name] == "" {
 			info, err := os.Stat(target)
 			if err != nil {
 				return nil, fmt.Errorf("tool %s: entry: %w", t.Name, err)
@@ -237,25 +239,29 @@ func shadowing(name, target, prefix, pathEnv string) string {
 	return ""
 }
 
-func installLinks(env *cli.Env, prefix string, dryRun bool) int {
+func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 	root, err := paths.Root(env.Getenv)
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
 	goToolRoot := filepath.Join(paths.StateDir(env.Getenv), "go-tools")
 	binaries := map[string]string{}
+	stagedByName := map[string]string{}
+	var stagedGoTools []goToolBinary
 	if dryRun {
 		binaries, err = goToolDestinations(root, goToolRoot, runtime.GOOS, runtime.GOARCH)
 		if err != nil {
 			return cli.Envf(env, "install: %v", err)
 		}
 	} else {
-		built, buildErr := buildGoTools(root, goToolRoot, runtime.GOOS, runtime.GOARCH, env.Getenv("PATH"))
-		if buildErr != nil {
-			return cli.Envf(env, "install: %v", buildErr)
+		stagedGoTools, err = buildGoTools(root, goToolRoot, runtime.GOOS, runtime.GOARCH, env.Getenv("PATH"))
+		if err != nil {
+			return cli.Envf(env, "install: %v", err)
 		}
-		for _, tool := range built {
-			binaries[tool.Name] = tool.Path
+		defer discardGoTools(stagedGoTools)
+		for _, tool := range stagedGoTools {
+			binaries[tool.Name] = tool.Target
+			stagedByName[tool.Name] = tool.Path
 		}
 	}
 	wants, err := desiredLinks(root, binaries, dryRun)
@@ -307,8 +313,12 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 			collisions = append(collisions, fmt.Sprintf("%s: another %s is on PATH at %s", lp, w.name, other))
 			continue
 		}
+		hashTarget := w.target
+		if staged := stagedByName[w.name]; staged != "" {
+			hashTarget = staged
+		}
 		if !dryRun || binaries[w.name] == "" {
-			sum, err := sha256File(w.target)
+			sum, err := sha256File(hashTarget)
 			if err != nil {
 				return cli.Envf(env, "install: %v", err)
 			}
@@ -349,11 +359,6 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 			continue
 		}
 		l.Action = "removed"
-		if !dryRun {
-			if err := os.Remove(lp); err != nil {
-				return cli.Envf(env, "install: remove %s: %v", lp, err)
-			}
-		}
 		removed = append(removed, l)
 	}
 
@@ -371,6 +376,39 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Dir(rpath), 0o755); err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	raw, err := marshalJSON(receipt)
+	if err != nil {
+		return cli.Envf(env, "install: %v", err)
+	}
+	mutations := []string{rpath}
+	for _, tool := range stagedGoTools {
+		mutations = append(mutations, tool.Target)
+	}
+	for _, link := range links {
+		if link.Action != "unchanged" {
+			mutations = append(mutations, link.Path)
+		}
+	}
+	for _, link := range removed {
+		if link.Action == "removed" {
+			mutations = append(mutations, link.Path)
+		}
+	}
+	tx, err := prepareInstall(mutations)
+	if err != nil {
+		return cli.Envf(env, "install: preflight: %v", err)
+	}
+	defer func() {
+		if err := tx.finish(); err != nil {
+			code = cli.Envf(env, "install: %v", err)
+		}
+	}()
+	if err := commitGoTools(stagedGoTools); err != nil {
+		return cli.Envf(env, "install: commit Go tools: %v", err)
+	}
 	for _, l := range links {
 		if l.Action == "unchanged" {
 			continue
@@ -385,16 +423,18 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 			return cli.Envf(env, "install: verification failed for %s", l.Path)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(rpath), 0o755); err != nil {
-		return cli.Envf(env, "install: %v", err)
+	for _, l := range removed {
+		if l.Action != "removed" {
+			continue
+		}
+		if err := os.Remove(l.Path); err != nil {
+			return cli.Envf(env, "install: remove %s: %v", l.Path, err)
+		}
 	}
-	raw, err := marshalJSON(receipt)
-	if err != nil {
-		return cli.Envf(env, "install: %v", err)
-	}
-	if err := writeFileAtomic(rpath, raw, 0o644); err != nil {
+	if err := installReceiptWrite(rpath, raw, 0o644); err != nil {
 		return cli.Envf(env, "install: write receipt: %v", err)
 	}
+	tx.committed = true
 	receipt.File = rpath
 	receipt.Removed = removed
 	if err := writeJSON(env.Stdout, receipt); err != nil {
@@ -408,13 +448,23 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 
 // replaceSymlink points path at target atomically (a new link renamed over the old one).
 func replaceSymlink(path, target string) error {
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".agent-dry-"+strconv.Itoa(os.Getpid()))
-	os.Remove(tmp)
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".agent-dry-*")
+	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
 	if err := os.Symlink(target, tmp); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return nil

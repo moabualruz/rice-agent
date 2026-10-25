@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -79,6 +80,28 @@ func TestInstallGoToolDryRunTargetsFutureBinaryWithoutBuilding(t *testing.T) {
 	}
 	if exists(f.state) || exists(f.prefix) {
 		t.Fatal("dry run created the Go binary or install links")
+	}
+}
+
+func TestBuildGoToolsPrefersVerifiedPackagedBinaryWhenGoIsAvailable(t *testing.T) {
+	f := newInstallFixture(t)
+	name := "dfx-go-packaged"
+	addGoToolFixture(t, f.root, name)
+	packaged := filepath.Join(f.root, "tools", name, "bin", platform(), name)
+	writeFile(t, packaged, "#!/bin/sh\necho packaged binary\n", 0o755)
+	fakeGo := filepath.Join(f.home, "go", "go")
+	writeFile(t, fakeGo, "#!/bin/sh\nexit 99\n", 0o755)
+
+	tools, err := buildGoTools(f.root, filepath.Join(f.state, "go-tools"), runtime.GOOS, runtime.GOARCH, filepath.Dir(fakeGo))
+	if err != nil {
+		t.Fatalf("build Go tools: %v", err)
+	}
+	defer discardGoTools(tools)
+	if len(tools) != 1 || tools[0].Name != name || tools[0].Target != filepath.Join(f.state, "go-tools", name, platform(), name) {
+		t.Fatalf("Go tool result: %+v", tools)
+	}
+	if got := readFile(t, tools[0].Path); got != readFile(t, packaged) {
+		t.Fatalf("staged binary %q differs from packaged binary", got)
 	}
 }
 
@@ -179,6 +202,28 @@ func TestInstallLinksReceiptAndUninstall(t *testing.T) {
 	}
 	if code, _, _ := run(t, f.vars, "install", "--uninstall"); code != 0 {
 		t.Fatalf("uninstall without receipt: %d", code)
+	}
+}
+
+func TestInstallCollisionDoesNotReplacePackagedGoTool(t *testing.T) {
+	f := newInstallFixture(t)
+	name := "dfx-go-collision"
+	addGoToolFixture(t, f.root, name)
+	packaged := filepath.Join(f.root, "tools", name, "bin", platform(), name)
+	writeFile(t, packaged, "#!/bin/sh\necho packaged\n", 0o755)
+	target := filepath.Join(f.state, "go-tools", name, platform(), name)
+	writeFile(t, target, "previous stable binary\n", 0o755)
+	writeFile(t, filepath.Join(f.prefix, "dfx-hello"), "user file\n", 0o755)
+
+	code, _, errb := run(t, f.vars, "install")
+	if code != 1 || !strings.Contains(errb, "collision") {
+		t.Fatalf("install collision: code %d, stderr %s", code, errb)
+	}
+	if got := readFile(t, target); got != "previous stable binary\n" {
+		t.Fatalf("stable Go binary changed before preflight completed: %q", got)
+	}
+	if exists(filepath.Join(f.prefix, "agent-dry")) || exists(filepath.Join(f.state, ReceiptFile)) {
+		t.Fatal("install changed links or receipt despite collision")
 	}
 }
 

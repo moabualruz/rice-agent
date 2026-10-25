@@ -195,6 +195,7 @@ func buildBundle(env *cli.Env, root, goos, goarch, out string) (*Bundle, int) {
 		fmt.Fprintf(env.Stderr, "agent-dry: bundle: %v\n", err)
 		return nil, cli.ExitNegative
 	}
+	defer discardGoTools(goTools)
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return nil, cli.Envf(env, "bundle: %v", err)
 	}
