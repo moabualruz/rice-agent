@@ -12,7 +12,11 @@ import (
 
 func expiredScratch(t *testing.T) (config, string) {
 	t.Helper()
-	cfg := testConfig(fixtureDir(t))
+	root, err := canonicalPath(fixtureDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(root)
 	path := rootPath(cfg, "alpha", "scratch", "lease-expired")
 	putFile(t, filepath.Join(path, "data"), "keep")
 	stamp := time.Now().Add(-5 * 24 * time.Hour).UTC().Format(time.RFC3339)
