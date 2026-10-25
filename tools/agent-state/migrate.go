@@ -314,25 +314,29 @@ func applyMigrationLocked(cfg config, idx registryIndex, id, directory string, s
 	}
 	// All destinations and inputs above are preflighted without creating scaffolding.
 	return withStateTransaction(cfg, stderr, func(tx *stateTransaction) int {
-		for _, entry := range plan.Candidates {
-			if err := tx.track(filepath.Join(entry.Path, "manifest.json")); err != nil {
-				return exitEnv
-			}
-		}
-		if err := tx.track(receiptPath); err != nil {
-			return exitEnv
-		}
+		var migrated, skipped []planEntry
 		for _, entry := range plan.Candidates {
 			ledgers, ledgerErr := migrationLedgers(cfg, filepath.Dir(filepath.Dir(entry.Path)))
 			if !reflect.DeepEqual(entry, migrationEntry(cfg, idx, entry.Path, ledgers, ledgerErr)) {
 				fmt.Fprintln(stderr, "agent-state: legacy evidence changed during migration")
 				return exitBlocked
 			}
-			if err := writeJSONAtomic(filepath.Join(entry.Path, "manifest.json"), entry.Migration.Manifest, 0o600); err != nil {
+			if err := tx.createJSON(filepath.Join(entry.Path, "manifest.json"), entry.Migration.Manifest, 0o600); err != nil {
+				if errors.Is(err, os.ErrExist) {
+					entry.Reasons = []string{"concurrent_manifest"}
+					skipped = append(skipped, entry)
+					fmt.Fprintf(stdout, "skipped path=%s reason=concurrent_manifest\n", entry.Path)
+					continue
+				}
 				return exitEnv
 			}
+			migrated = append(migrated, entry)
 		}
-		for _, entry := range plan.Candidates {
+		if len(migrated) == 0 {
+			fmt.Fprintf(stdout, "migrated=0 skipped=%d\n", len(skipped))
+			return exitOK
+		}
+		for _, entry := range migrated {
 			if len(protectionCheck(cfg, idx, entry.Path)) != 0 {
 				return exitBlocked
 			}
@@ -343,11 +347,15 @@ func applyMigrationLocked(cfg config, idx registryIndex, id, directory string, s
 		if err := tx.mkdir(filepath.Dir(receiptPath)); err != nil {
 			return exitEnv
 		}
-		receipt := map[string]any{"plan_id": id, "plan_digest": plan.Digest, "action": "migrate", "completed_at": time.Now().UTC().Format(time.RFC3339), "items": plan.Candidates}
-		if err := writeJSONAtomic(receiptPath, receipt, 0o600); err != nil {
+		receipt := map[string]any{"plan_id": id, "plan_digest": plan.Digest, "action": "migrate", "completed_at": time.Now().UTC().Format(time.RFC3339), "items": migrated, "skipped": skipped}
+		if err := tx.createJSON(receiptPath, receipt, 0o600); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				fmt.Fprintln(stderr, "agent-state: a concurrent migration receipt appeared; nothing overwritten")
+				return exitBlocked
+			}
 			return exitEnv
 		}
-		fmt.Fprintf(stdout, "migrated=%d\n", len(plan.Candidates))
+		fmt.Fprintf(stdout, "migrated=%d skipped=%d\n", len(migrated), len(skipped))
 		return exitOK
 	})
 }

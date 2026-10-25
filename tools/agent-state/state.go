@@ -381,40 +381,63 @@ func writeJSONAtomic(path string, value any, mode fs.FileMode) error {
 }
 
 var writeStateBytes = writeBytesAtomic
+var createStateBytes = createBytesAtomic
+var linkStatePath = os.Link
 
 func writeBytesAtomic(path string, data []byte, mode fs.FileMode) error {
+	_, err := publishBytesAtomic(path, data, mode, os.Rename)
+	return err
+}
+
+// Link publishes atomically without replacing a file, directory or symlink.
+func createBytesAtomic(path string, data []byte, mode fs.FileMode) (fs.FileInfo, error) {
+	return publishBytesAtomic(path, data, mode, linkStatePath)
+}
+
+// Return the published inode even if later cleanup or directory sync fails, so
+// rollback can remove only the file this transaction actually created.
+func publishBytesAtomic(path string, data []byte, mode fs.FileMode, publish func(string, string) error) (fs.FileInfo, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".agent-state-*.tmp")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	name := f.Name()
 	defer os.Remove(name)
 	if err := f.Chmod(mode); err != nil {
 		f.Close()
-		return err
+		return nil, err
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		return err
+		return nil, err
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return err
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
 	}
 	if err := f.Close(); err != nil {
-		return err
+		return nil, err
 	}
-	if err := os.Rename(name, path); err != nil {
-		return err
+	if err := publish(name, path); err != nil {
+		return nil, err
+	}
+	removeErr := os.Remove(name)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil // Rename already removed the temporary name.
 	}
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
-		return err
+		return info, errors.Join(removeErr, err)
 	}
-	return errors.Join(dir.Sync(), dir.Close())
+	return info, errors.Join(removeErr, dir.Sync(), dir.Close())
 }
 
 func newID(prefix string) (string, error) {

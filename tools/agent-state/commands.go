@@ -839,10 +839,11 @@ func mutateEvidence(cfg config, idx registryIndex, tx *stateTransaction, args []
 		if err := tx.mkdir(path); err != nil {
 			return exitEnv
 		}
-		if err := tx.track(filepath.Join(path, "manifest.json")); err != nil {
-			return exitEnv
-		}
-		if err := writeJSONAtomic(filepath.Join(path, "manifest.json"), m, 0o600); err != nil {
+		if err := tx.createJSON(filepath.Join(path, "manifest.json"), m, 0o600); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				fmt.Fprintln(stderr, "agent-state: a concurrent manifest appeared; nothing overwritten")
+				return exitBlocked
+			}
 			return exitEnv
 		}
 		fmt.Fprintln(stdout, path)
@@ -1538,9 +1539,6 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 		if err := tx.track(indexPath(cfg)); err != nil {
 			return exitEnv
 		}
-		if err := tx.track(receiptPath); err != nil {
-			return exitEnv
-		}
 		for _, entry := range items {
 			fingerprint, err := treeFingerprint(entry.Path)
 			if err != nil || fingerprint != entry.TreeSHA256 {
@@ -1572,7 +1570,11 @@ func applyGC(cfg config, id, planDirectory string, stdout, stderr io.Writer) int
 			return exitEnv
 		}
 		receipt := map[string]any{"plan_id": id, "action": "delete_scratch", "completed_at": time.Now().UTC().Format(time.RFC3339), "trash_path": trash, "items": items}
-		if err := writeJSONAtomic(receiptPath, receipt, 0o600); err != nil {
+		if err := tx.createJSON(receiptPath, receipt, 0o600); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				fmt.Fprintln(stderr, "agent-state: a concurrent GC receipt appeared; nothing overwritten")
+				return exitBlocked
+			}
 			return exitEnv
 		}
 		if err := tx.saveIndex(*idx); err != nil {

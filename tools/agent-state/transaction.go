@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +13,12 @@ import (
 )
 
 type stateBefore struct {
-	path   string
-	mode   fs.FileMode
-	data   []byte
-	exists bool
+	path     string
+	mode     fs.FileMode
+	data     []byte
+	exists   bool
+	created  fs.FileInfo
+	preserve bool
 }
 
 var renameStatePath = os.Rename
@@ -122,6 +125,38 @@ func (tx *stateTransaction) saveIndex(idx registryIndex) error {
 	return saveIndex(tx.cfg, idx)
 }
 
+// Create-only writes join the journal only after publication succeeds. In
+// particular, EEXIST must never make a concurrent writer's file ours to remove.
+func (tx *stateTransaction) createJSON(path string, value any, mode fs.FileMode) error {
+	if tx.seen[path] {
+		return errors.New("create-only path is already journaled")
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := tx.mkdir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	info, err := createStateBytes(path, append(data, '\n'), mode)
+	if info != nil {
+		tx.before = append(tx.before, stateBefore{path: path, created: info})
+		tx.seen[path] = true
+	} else if errors.Is(err, os.ErrExist) {
+		tx.preserveAncestors(path)
+	}
+	return err
+}
+
+func (tx *stateTransaction) preserveAncestors(path string) {
+	for i := range tx.before {
+		b := &tx.before[i]
+		if !b.exists && b.created == nil && b.path != path && inside(b.path, path) {
+			b.preserve = true
+		}
+	}
+}
+
 func (tx *stateTransaction) commit() { tx.committed = true }
 func (tx *stateTransaction) rollback() error {
 	if tx.committed {
@@ -130,8 +165,24 @@ func (tx *stateTransaction) rollback() error {
 	var errs []error
 	sort.SliceStable(tx.before, func(i, j int) bool { return len(tx.before[i].path) > len(tx.before[j].path) })
 	for _, b := range tx.before {
+		if b.preserve {
+			continue
+		}
 		var err error
-		if !b.exists {
+		if b.created != nil {
+			var current fs.FileInfo
+			current, err = os.Lstat(b.path)
+			if err == nil {
+				if !os.SameFile(b.created, current) {
+					tx.preserveAncestors(b.path)
+					continue
+				}
+				err = os.Remove(b.path)
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		} else if !b.exists {
 			err = os.Remove(b.path)
 			if errors.Is(err, os.ErrNotExist) {
 				err = nil

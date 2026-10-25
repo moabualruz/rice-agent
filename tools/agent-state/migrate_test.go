@@ -340,20 +340,21 @@ func TestMigrateRollsBackEntireBatch(t *testing.T) {
 			cfg, bundles := migrationFixture(t, "bundle-a", "bundle-b")
 			plan, directory, _ := reviewedMigrationPlan(t, cfg)
 			before := snapshotStateTree(t, cfg.Root)
-			baseWrite, baseProtection := writeStateBytes, protectionCheck
-			t.Cleanup(func() { writeStateBytes, protectionCheck = baseWrite, baseProtection })
+			baseCreate, baseProtection := createStateBytes, protectionCheck
+			t.Cleanup(func() { createStateBytes, protectionCheck = baseCreate, baseProtection })
 			written := 0
-			writeStateBytes = func(path string, data []byte, mode fs.FileMode) error {
-				if err := baseWrite(path, data, mode); err != nil {
-					return err
+			createStateBytes = func(path string, data []byte, mode fs.FileMode) (fs.FileInfo, error) {
+				info, err := baseCreate(path, data, mode)
+				if err != nil {
+					return info, err
 				}
 				if filepath.Base(path) == "manifest.json" {
 					written++
 				}
 				if failure == "second-manifest" && path == filepath.Join(bundles[1], "manifest.json") || failure == "receipt" && strings.HasSuffix(path, "-migrate.json") {
-					return errors.New("injected failure after atomic write")
+					return info, errors.New("injected failure after atomic write")
 				}
-				return nil
+				return info, nil
 			}
 			protectionCheck = func(cfg config, idx registryIndex, path string) []string {
 				reasons := baseProtection(cfg, idx, path)
@@ -405,8 +406,10 @@ func TestMigrateReadsAndCommitsUnderRegistryLock(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	baseRead, baseWrite, baseProtection := readStateFile, writeStateBytes, protectionCheck
-	t.Cleanup(func() { readStateFile, writeStateBytes, protectionCheck = baseRead, baseWrite, baseProtection })
+	baseRead, baseWrite, baseCreate, baseProtection := readStateFile, writeStateBytes, createStateBytes, protectionCheck
+	t.Cleanup(func() {
+		readStateFile, writeStateBytes, createStateBytes, protectionCheck = baseRead, baseWrite, baseCreate, baseProtection
+	})
 	reads, writes, checks := 0, 0, 0
 	readStateFile = func(path string) ([]byte, error) {
 		checkLock()
@@ -417,6 +420,11 @@ func TestMigrateReadsAndCommitsUnderRegistryLock(t *testing.T) {
 		checkLock()
 		writes++
 		return baseWrite(path, data, mode)
+	}
+	createStateBytes = func(path string, data []byte, mode fs.FileMode) (fs.FileInfo, error) {
+		checkLock()
+		writes++
+		return baseCreate(path, data, mode)
 	}
 	protectionCheck = func(cfg config, idx registryIndex, path string) []string {
 		checkLock()

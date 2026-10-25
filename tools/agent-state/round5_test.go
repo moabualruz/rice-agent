@@ -232,6 +232,16 @@ func TestRound5MutationEntryPointsUseFullProtectionUnderLock(t *testing.T) {
 				return baseWrite(path, data, mode)
 			}
 			t.Cleanup(func() { writeStateBytes = baseWrite })
+			baseCreate := createStateBytes
+			createStateBytes = func(path string, data []byte, mode fs.FileMode) (fs.FileInfo, error) {
+				if entry == "evidence-new" && filepath.Base(path) == "manifest.json" {
+					assertFinalCheck("manifest creation", filepath.Dir(path))
+				} else {
+					events = append(events, "auxiliary-create:"+path)
+				}
+				return baseCreate(path, data, mode)
+			}
+			t.Cleanup(func() { createStateBytes = baseCreate })
 			baseCopy := copyFile
 			copyFile = func(dst, src string, mode fs.FileMode) error {
 				switch entry {
@@ -511,14 +521,14 @@ func TestRound5GCReceiptFailureRollsBackTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := snapshotStateTree(t, cfg.Root)
-	base := writeStateBytes
-	writeStateBytes = func(path string, data []byte, mode fs.FileMode) error {
+	base := createStateBytes
+	createStateBytes = func(path string, data []byte, mode fs.FileMode) (fs.FileInfo, error) {
 		if strings.Contains(path, string(filepath.Separator)+"receipts"+string(filepath.Separator)) {
-			return errors.New("injected receipt failure")
+			return nil, errors.New("injected receipt failure")
 		}
 		return base(path, data, mode)
 	}
-	t.Cleanup(func() { writeStateBytes = base })
+	t.Cleanup(func() { createStateBytes = base })
 	if code := applyGC(cfg, plan.ID, plansPath(cfg), io.Discard, io.Discard); code != exitEnv {
 		t.Fatal(code)
 	}
