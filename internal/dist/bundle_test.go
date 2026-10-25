@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -58,9 +59,27 @@ func readTarball(t *testing.T, path string) (map[string][]byte, map[string]int64
 	return files, modes
 }
 
+func addGoToolFixture(t *testing.T, root, name string) {
+	t.Helper()
+	dir := filepath.Join(root, "tools", name)
+	platforms := []string{platform()}
+	if platform() != "linux-amd64" {
+		platforms = append(platforms, "linux-amd64")
+	}
+	platformJSON, err := json.Marshal(platforms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(`{"schema":"tool/v1","name":%q,"summary":"Use when testing Go tool distribution","intents":["test Go tool bundle","test Go install","test Go compiler"],"kind":"cli","scope":"global","entry":%q,"language":"go","side_effects":"read","exit_codes":{"0":"success","2":"usage error"},"platforms":%s,"test":"go test .","status":"trial","origin":{"date":"2026-10-25","builder":"test","task":"fixture"}}`, name, name, platformJSON)
+	writeFile(t, filepath.Join(dir, "tool.json"), manifest, 0o644)
+	writeFile(t, filepath.Join(dir, name), "#!/bin/sh\nexit 0\n", 0o755)
+	writeFile(t, filepath.Join(dir, "main.go"), "package main\nfunc main() {}\n", 0o644)
+}
+
 func TestBundleLinuxAmd64(t *testing.T) {
 	requireCommands(t, "go", "git")
 	root := fixtureModule(t)
+	addGoToolFixture(t, root, "dfx-go")
 	gitRun(t, root, "init", "-q")
 	gitRun(t, root, "add", "-A")
 	gitRun(t, root, "commit", "-q", "-m", "fixture")
@@ -99,6 +118,10 @@ func TestBundleLinuxAmd64(t *testing.T) {
 	}
 	if modes["tools/dfx-hello/dfx-hello"] != 0o755 || modes["registry/wanted.json"] != 0o644 {
 		t.Errorf("modes: entry %o manifest %o", modes["tools/dfx-hello/dfx-hello"], modes["registry/wanted.json"])
+	}
+	goTool := files["tools/dfx-go/bin/linux-amd64/dfx-go"]
+	if !bytes.HasPrefix(goTool, []byte("\x7fELF")) || modes["tools/dfx-go/bin/linux-amd64/dfx-go"] != 0o755 {
+		t.Errorf("Go tool binary missing or invalid, mode %o", modes["tools/dfx-go/bin/linux-amd64/dfx-go"])
 	}
 	for name := range files {
 		if strings.HasPrefix(name, "cmd/") || strings.HasPrefix(name, "internal/") || name == "go.mod" || strings.HasPrefix(name, ".git") {

@@ -200,7 +200,7 @@ func vendorCopy(env *cli.Env, name, repo, as string, dryRun bool) int {
 	if !toolName.MatchString(name) {
 		return cli.Usagef(env, "vendor: invalid tool name %q", name)
 	}
-	root, err := paths.Root(env.Getenv)
+	root, err := distRoot(env.Getenv)
 	if err != nil {
 		return cli.Envf(env, "vendor: %v", err)
 	}
@@ -404,7 +404,7 @@ func CheckVendored(root, repo string) (*VendorReport, error) {
 }
 
 func vendorCheck(env *cli.Env, repo string) int {
-	root, err := paths.Root(env.Getenv)
+	root, err := distRoot(env.Getenv)
 	if err != nil {
 		return cli.Envf(env, "vendor: %v", err)
 	}

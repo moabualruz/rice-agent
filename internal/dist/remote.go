@@ -12,6 +12,7 @@ import (
 
 	"github.com/moabualruz/agent-dry/internal/cli"
 	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/agent-dry/internal/shellquote"
 )
 
 // remoteTarget is the platform of every remote host; tests point it at the local platform so the
@@ -33,8 +34,6 @@ type remotePlan struct {
 	DryRun   bool     `json:"dry_run"`
 	Steps    []string `json:"steps"`
 }
-
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string) int {
 	cfg, err := paths.LoadConfig(env.Getenv)
@@ -82,7 +81,7 @@ func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string)
 	if uninstall {
 		stdin = strings.NewReader(remoteUninstallScript(installArgs))
 	} else {
-		root, err := paths.Root(env.Getenv)
+		root, err := distRoot(env.Getenv)
 		if err != nil {
 			return cli.Envf(env, "install: %v", err)
 		}
@@ -133,14 +132,14 @@ func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string)
 func remoteInstallScript(b *Bundle, installArgs []string) string {
 	args := make([]string, len(installArgs))
 	for i, a := range installArgs {
-		args[i] = shellQuote(a)
+		args[i] = shellquote.POSIX(a)
 	}
 	return `agent_dry_remote_install() {
   set -euo pipefail
   umask 022
-  local version=` + shellQuote(b.Version) + `
+  local version=` + shellquote.POSIX(b.Version) + `
   local size=` + strconv.FormatInt(b.Bytes, 10) + `
-  local sum=` + shellQuote(b.SHA256) + `
+  local sum=` + shellquote.POSIX(b.SHA256) + `
   local base="$HOME/.local/share/agent-dry"
   local dest="$base/$version"
   case "$base" in *'"'*|*\\*) echo "agent-dry remote: unsupported HOME path" >&2; exit 3 ;; esac
@@ -200,7 +199,7 @@ agent_dry_remote_install; exit $?
 func remoteUninstallScript(installArgs []string) string {
 	args := make([]string, len(installArgs))
 	for i, a := range installArgs {
-		args[i] = shellQuote(a)
+		args[i] = shellquote.POSIX(a)
 	}
 	return `set -euo pipefail
 bin="$HOME/.local/share/agent-dry/current/bin/agent-dry"

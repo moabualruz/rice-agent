@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -57,6 +58,51 @@ func wantNames() []string {
 	}
 	sort.Strings(n)
 	return n
+}
+
+func TestInstallGoToolDryRunTargetsFutureBinaryWithoutBuilding(t *testing.T) {
+	f := newInstallFixture(t)
+	addGoToolFixture(t, f.root, "dfx-go-dry")
+	code, out, errb := run(t, f.vars, "install", "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry run: %d %s", code, errb)
+	}
+	receipt := decodeReceipt(t, out)
+	var target string
+	for _, link := range receipt.Links {
+		if link.Name == "dfx-go-dry" {
+			target = link.Target
+		}
+	}
+	want := filepath.Join(f.state, "go-tools", "dfx-go-dry", platform(), "dfx-go-dry")
+	if target != want {
+		t.Fatalf("Go tool target=%q want %q", target, want)
+	}
+	if exists(f.state) || exists(f.prefix) {
+		t.Fatal("dry run created the Go binary or install links")
+	}
+}
+
+func TestBuildGoToolsPrefersVerifiedPackagedBinaryWhenGoIsAvailable(t *testing.T) {
+	f := newInstallFixture(t)
+	name := "dfx-go-packaged"
+	addGoToolFixture(t, f.root, name)
+	packaged := filepath.Join(f.root, "tools", name, "bin", platform(), name)
+	writeFile(t, packaged, "#!/bin/sh\necho packaged binary\n", 0o755)
+	fakeGo := filepath.Join(f.home, "go", "go")
+	writeFile(t, fakeGo, "#!/bin/sh\nexit 99\n", 0o755)
+
+	tools, err := buildGoTools(f.root, filepath.Join(f.state, "go-tools"), runtime.GOOS, runtime.GOARCH, filepath.Dir(fakeGo))
+	if err != nil {
+		t.Fatalf("build Go tools: %v", err)
+	}
+	defer discardGoTools(tools)
+	if len(tools) != 1 || tools[0].Name != name || tools[0].Target != filepath.Join(f.state, "go-tools", name, platform(), name) {
+		t.Fatalf("Go tool result: %+v", tools)
+	}
+	if got := readFile(t, tools[0].Path); got != readFile(t, packaged) {
+		t.Fatalf("staged binary %q differs from packaged binary", got)
+	}
 }
 
 func TestInstallLinksReceiptAndUninstall(t *testing.T) {
@@ -157,6 +203,58 @@ func TestInstallLinksReceiptAndUninstall(t *testing.T) {
 	if code, _, _ := run(t, f.vars, "install", "--uninstall"); code != 0 {
 		t.Fatalf("uninstall without receipt: %d", code)
 	}
+}
+
+func TestInstallCollisionDoesNotReplacePackagedGoTool(t *testing.T) {
+	f := newInstallFixture(t)
+	name := "dfx-go-collision"
+	addGoToolFixture(t, f.root, name)
+	packaged := filepath.Join(f.root, "tools", name, "bin", platform(), name)
+	writeFile(t, packaged, "#!/bin/sh\necho packaged\n", 0o755)
+	target := filepath.Join(f.state, "go-tools", name, platform(), name)
+	writeFile(t, target, "previous stable binary\n", 0o755)
+	writeFile(t, filepath.Join(f.prefix, "dfx-hello"), "user file\n", 0o755)
+
+	code, _, errb := run(t, f.vars, "install")
+	if code != 1 || !strings.Contains(errb, "collision") {
+		t.Fatalf("install collision: code %d, stderr %s", code, errb)
+	}
+	if got := readFile(t, target); got != "previous stable binary\n" {
+		t.Fatalf("stable Go binary changed before preflight completed: %q", got)
+	}
+	if exists(filepath.Join(f.prefix, "agent-dry")) || exists(filepath.Join(f.state, ReceiptFile)) {
+		t.Fatal("install changed links or receipt despite collision")
+	}
+}
+
+func TestInstallBuildsAndLinksGoTools(t *testing.T) {
+	f := newInstallFixture(t)
+	requireCommands(t, "go")
+	writeFile(t, filepath.Join(f.root, "go.mod"), "module github.com/moabualruz/agent-dry\n\ngo 1.21\n", 0o644)
+	addGoToolFixture(t, f.root, "dfx-go")
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not available")
+	}
+	f.vars["PATH"] = f.prefix + ":" + filepath.Dir(goBin) + ":/usr/bin:/bin"
+	code, out, errb := run(t, f.vars, "install")
+	if code != 0 {
+		t.Fatalf("install: %d %s", code, errb)
+	}
+	receipt := decodeReceipt(t, out)
+	for _, link := range receipt.Links {
+		if link.Name != "dfx-go" {
+			continue
+		}
+		if !strings.Contains(link.Target, filepath.Join("go-tools", "dfx-go", platform())) {
+			t.Fatalf("Go tool linked to %s", link.Target)
+		}
+		if _, err := exec.Command(link.Path).CombinedOutput(); err != nil {
+			t.Fatalf("Go tool executable: %v", err)
+		}
+		return
+	}
+	t.Fatal("Go tool is missing from install receipt")
 }
 
 func TestInstallRefusesCollisionsWithoutChanges(t *testing.T) {
@@ -320,6 +418,34 @@ func TestDoctor(t *testing.T) {
 	writeFile(t, f.vars["AGENT_DRY_CONFIG"], "{not json", 0o644)
 	if code, out, _ := run(t, f.vars, "doctor"); code != 1 || !strings.Contains(out, "FAIL config") {
 		t.Fatalf("bad config: %d\n%s", code, out)
+	}
+}
+
+func TestDoctorRecognizesInstalledGoToolStatePath(t *testing.T) {
+	f := newInstallFixture(t)
+	writeFile(t, f.vars["AGENT_DRY_CONFIG"], `{"root": "`+f.root+`"}`, 0o644)
+	name := "dfx-go-doctor"
+	addGoToolFixture(t, f.root, name)
+	manifestPath := filepath.Join(f.root, "tools", name, "tool.json")
+	manifest := strings.Replace(readFile(t, manifestPath), `"test":"go test ."`, `"requires":["bash"],"test":"go test ."`, 1)
+	writeFile(t, manifestPath, manifest, 0o644)
+	writeFile(t, filepath.Join(f.root, "tools", name, "bin", platform(), name), "#!/bin/sh\necho packaged\n", 0o755)
+
+	if code, _, errb := run(t, f.vars, "install"); code != 0 {
+		t.Fatalf("install: %d %s", code, errb)
+	}
+	code, out, _ := run(t, f.vars, "doctor")
+	if code != 0 || !strings.Contains(out, "doctor: healthy") {
+		t.Fatalf("doctor after Go tool install: %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "PASS links:") || strings.Contains(out, "FAIL tools:") {
+		t.Fatalf("doctor reported an invalid Go tool link:\n%s", out)
+	}
+	manifest = strings.Replace(manifest, `"requires":["bash"]`, `"requires":["dfx-missing-go-dependency"]`, 1)
+	writeFile(t, manifestPath, manifest, 0o644)
+	code, out, _ = run(t, f.vars, "doctor")
+	if code == 0 || !strings.Contains(out, "FAIL requires: dfx-missing-go-dependency") {
+		t.Fatalf("Go tool dependency checks were skipped: %d\n%s", code, out)
 	}
 }
 

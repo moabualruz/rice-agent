@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
     # Weekly self-check: tools that break after an environment change surface without a push.
     - cron: "17 4 * * 1"
@@ -13,6 +15,7 @@ permissions:
 
 jobs:
   guards:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, generic]
     timeout-minutes: 15
     steps:
@@ -34,6 +37,7 @@ jobs:
           "$tools/gitleaks" git --no-banner --redact
 
   go:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, generic]
     timeout-minutes: 20
     steps:

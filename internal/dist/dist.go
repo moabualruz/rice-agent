@@ -110,10 +110,10 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode) error {
 	if _, err := tmp.Write(data); err != nil {
 		return fail(err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := tmp.Chmod(mode.Perm()); err != nil {
 		return fail(err)
 	}
-	if err := tmp.Chmod(mode.Perm()); err != nil {
+	if err := tmp.Sync(); err != nil {
 		return fail(err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -124,7 +124,26 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode) error {
 		os.Remove(name)
 		return err
 	}
-	return nil
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
+func removeFileSync(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 // writeJSON prints v as indented JSON.

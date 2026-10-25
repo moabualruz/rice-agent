@@ -1,0 +1,57 @@
+{
+  "schema": "tool/v1",
+  "name": "agent-state",
+  "summary": "Use when managing agent state retention, scratch and evidence",
+  "intents": [
+    "agent execution state report",
+    "create evidence retention plans",
+    "manage scratch leases",
+    "archive and verify evidence",
+    "goal ledger path",
+    "protect paths from cleanup",
+    "clean agent execution state"
+  ],
+  "tags": ["agent-state", "retention", "evidence", "scratch"],
+  "kind": "cli",
+  "scope": "global",
+  "entry": "agent-state",
+  "language": "go",
+  "side_effects": "destructive",
+  "dry_run": "--dry-run",
+  "exit_codes": {
+    "0": "success or a dry-run plan was written",
+    "1": "negative result or operation failed",
+    "2": "usage error",
+    "3": "environment or setup failure",
+    "4": "blocked by a safety gate with no change"
+  },
+  "platforms": ["darwin-arm64", "linux-amd64"],
+  "requires": ["git >= 2.15", "repo-state", "lsof", "restic", "bao-run", "gitleaks"],
+  "config": [
+    "agent_state.root",
+    "agent_state.pinned_paths",
+    "agent_state.active_ledger_days",
+    "agent_state.scratch_ttl",
+    "agent_state.evidence_grace",
+    "agent_state.project_budget_bytes",
+    "agent_state.warn_total_bytes",
+    "agent_state.fail_total_bytes",
+    "agent_state.archive.repo",
+    "agent_state.archive.password_ref",
+    "agent_state.archive.retention_months"
+  ],
+  "test": "bash test.sh",
+  "replaces": [
+    "du .*agent-execution",
+    "find .*agent-execution",
+    "mkdir -p .*agent-execution/.*/evidence",
+    "cp -c .*agent-execution",
+    "rm -rf .*agent-execution"
+  ],
+  "status": "trial",
+  "origin": {
+    "date": "2026-10-25",
+    "builder": "gpt-6-luna",
+    "task": "agent-state evidence retention P0"
+  }
+}
