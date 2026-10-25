@@ -190,6 +190,11 @@ func buildBundle(env *cli.Env, root, goos, goarch, out string) (*Bundle, int) {
 		fmt.Fprintf(env.Stderr, "agent-dry: bundle: go build for %s-%s failed: %v\n%s", goos, goarch, err, tailLines(string(outb), 40))
 		return nil, cli.ExitNegative
 	}
+	goTools, err := buildGoTools(root, filepath.Join(work, "tool-binaries"), goos, goarch, env.Getenv("PATH"))
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "agent-dry: bundle: %v\n", err)
+		return nil, cli.ExitNegative
+	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return nil, cli.Envf(env, "bundle: %v", err)
 	}
@@ -199,7 +204,7 @@ func buildBundle(env *cli.Env, root, goos, goarch, out string) (*Bundle, int) {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if err := writeTarball(tmp, root, bin, version); err != nil {
+	if err := writeTarball(tmp, root, bin, version, goTools); err != nil {
 		tmp.Close()
 		return nil, cli.Envf(env, "bundle: %v", err)
 	}
@@ -232,7 +237,7 @@ func tailLines(s string, n int) string {
 }
 
 // writeTarball packs the bundle layout into w as gzip-compressed tar.
-func writeTarball(w io.Writer, root, bin, version string) error {
+func writeTarball(w io.Writer, root, bin, version string, goTools []goToolBinary) error {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
 	now := time.Now().Truncate(time.Second)
@@ -272,6 +277,22 @@ func writeTarball(w io.Writer, root, bin, version string) error {
 			return fmt.Errorf("%s is not a directory", src)
 		}
 		if err := addTree(tw, root, src); err != nil {
+			return err
+		}
+	}
+	for _, tool := range goTools {
+		if err := dir(filepath.ToSlash(filepath.Join("tools", tool.Name, "bin"))); err != nil {
+			return err
+		}
+		if err := dir(filepath.ToSlash(filepath.Join("tools", tool.Name, "bin", tool.Platform))); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(tool.Path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(filepath.Join("tools", tool.Name, "bin", tool.Platform, tool.Name))
+		if err := file(name, 0o755, data); err != nil {
 			return err
 		}
 	}

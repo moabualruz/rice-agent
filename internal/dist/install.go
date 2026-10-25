@@ -106,7 +106,7 @@ type want struct {
 }
 
 // desiredLinks lists the agent-dry binary and every installable tool under root.
-func desiredLinks(root string) ([]want, error) {
+func desiredLinks(root string, binaries map[string]string, dryRun bool) ([]want, error) {
 	bin := filepath.Join(root, "bin", "agent-dry")
 	if info, err := os.Stat(bin); err != nil || !info.Mode().IsRegular() {
 		exe, err := executable()
@@ -130,12 +130,17 @@ func desiredLinks(root string) ([]want, error) {
 		}
 		seen[t.Name] = true
 		target := t.EntryPath()
-		info, err := os.Stat(target)
-		if err != nil {
-			return nil, fmt.Errorf("tool %s: entry: %w", t.Name, err)
+		if built := binaries[t.Name]; built != "" {
+			target = built
 		}
-		if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
-			return nil, fmt.Errorf("tool %s: entry %s is not an executable file", t.Name, target)
+		if !dryRun || binaries[t.Name] == "" {
+			info, err := os.Stat(target)
+			if err != nil {
+				return nil, fmt.Errorf("tool %s: entry: %w", t.Name, err)
+			}
+			if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+				return nil, fmt.Errorf("tool %s: entry %s is not an executable file", t.Name, target)
+			}
 		}
 		out = append(out, want{name: t.Name, target: target, requires: t.Requires})
 	}
@@ -237,7 +242,23 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
-	wants, err := desiredLinks(root)
+	goToolRoot := filepath.Join(paths.StateDir(env.Getenv), "go-tools")
+	binaries := map[string]string{}
+	if dryRun {
+		binaries, err = goToolDestinations(root, goToolRoot, runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			return cli.Envf(env, "install: %v", err)
+		}
+	} else {
+		built, buildErr := buildGoTools(root, goToolRoot, runtime.GOOS, runtime.GOARCH, env.Getenv("PATH"))
+		if buildErr != nil {
+			return cli.Envf(env, "install: %v", buildErr)
+		}
+		for _, tool := range built {
+			binaries[tool.Name] = tool.Path
+		}
+	}
+	wants, err := desiredLinks(root, binaries, dryRun)
 	if err != nil {
 		return cli.Envf(env, "install: %v", err)
 	}
@@ -286,11 +307,13 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) int {
 			collisions = append(collisions, fmt.Sprintf("%s: another %s is on PATH at %s", lp, w.name, other))
 			continue
 		}
-		sum, err := sha256File(w.target)
-		if err != nil {
-			return cli.Envf(env, "install: %v", err)
+		if !dryRun || binaries[w.name] == "" {
+			sum, err := sha256File(w.target)
+			if err != nil {
+				return cli.Envf(env, "install: %v", err)
+			}
+			l.SHA256 = sum
 		}
-		l.SHA256 = sum
 		links = append(links, l)
 	}
 	if len(collisions) > 0 {

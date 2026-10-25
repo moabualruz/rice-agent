@@ -59,6 +59,29 @@ func wantNames() []string {
 	return n
 }
 
+func TestInstallGoToolDryRunTargetsFutureBinaryWithoutBuilding(t *testing.T) {
+	f := newInstallFixture(t)
+	addGoToolFixture(t, f.root, "dfx-go-dry")
+	code, out, errb := run(t, f.vars, "install", "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry run: %d %s", code, errb)
+	}
+	receipt := decodeReceipt(t, out)
+	var target string
+	for _, link := range receipt.Links {
+		if link.Name == "dfx-go-dry" {
+			target = link.Target
+		}
+	}
+	want := filepath.Join(f.state, "go-tools", "dfx-go-dry", platform(), "dfx-go-dry")
+	if target != want {
+		t.Fatalf("Go tool target=%q want %q", target, want)
+	}
+	if exists(f.state) || exists(f.prefix) {
+		t.Fatal("dry run created the Go binary or install links")
+	}
+}
+
 func TestInstallLinksReceiptAndUninstall(t *testing.T) {
 	f := newInstallFixture(t)
 
@@ -157,6 +180,36 @@ func TestInstallLinksReceiptAndUninstall(t *testing.T) {
 	if code, _, _ := run(t, f.vars, "install", "--uninstall"); code != 0 {
 		t.Fatalf("uninstall without receipt: %d", code)
 	}
+}
+
+func TestInstallBuildsAndLinksGoTools(t *testing.T) {
+	f := newInstallFixture(t)
+	requireCommands(t, "go")
+	writeFile(t, filepath.Join(f.root, "go.mod"), "module github.com/moabualruz/agent-dry\n\ngo 1.21\n", 0o644)
+	addGoToolFixture(t, f.root, "dfx-go")
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not available")
+	}
+	f.vars["PATH"] = f.prefix + ":" + filepath.Dir(goBin) + ":/usr/bin:/bin"
+	code, out, errb := run(t, f.vars, "install")
+	if code != 0 {
+		t.Fatalf("install: %d %s", code, errb)
+	}
+	receipt := decodeReceipt(t, out)
+	for _, link := range receipt.Links {
+		if link.Name != "dfx-go" {
+			continue
+		}
+		if !strings.Contains(link.Target, filepath.Join("go-tools", "dfx-go", platform())) {
+			t.Fatalf("Go tool linked to %s", link.Target)
+		}
+		if _, err := exec.Command(link.Path).CombinedOutput(); err != nil {
+			t.Fatalf("Go tool executable: %v", err)
+		}
+		return
+	}
+	t.Fatal("Go tool is missing from install receipt")
 }
 
 func TestInstallRefusesCollisionsWithoutChanges(t *testing.T) {

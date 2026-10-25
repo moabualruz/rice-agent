@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# agent-state launcher: builds the Go source next to this file and runs it with the caller's
+# working directory and arguments. Without Go, it runs a prebuilt bin/agent-state beside this file.
+# Scaffolded by agent-dry new; Bash 3.2 compatible.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in
+    /*) ;;
+    *) src="$dir/$src" ;;
+  esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
+
+if command -v go >/dev/null 2>&1; then
+  out="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/agent-dry/go-bin/agent-state"
+  mkdir -p "$(dirname "$out")"
+  if ! GOFLAGS='' go -C "$here" build -o "$out.$$" . >&2; then
+    rm -f "$out.$$"
+    printf '%s: go build failed\n' "agent-state" >&2
+    exit 3
+  fi
+  mv -f "$out.$$" "$out"
+  exec "$out" "$@"
+fi
+if [ -x "$here/bin/agent-state" ]; then
+  exec "$here/bin/agent-state" "$@"
+fi
+printf '%s: needs go to build from source, or a prebuilt %s\n' "agent-state" "$here/bin/agent-state" >&2
+exit 3
