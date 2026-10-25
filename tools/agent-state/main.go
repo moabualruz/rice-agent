@@ -34,6 +34,7 @@ Commands:
   lint [--project P]                      inspect evidence for forbidden content
   gc [--dry-run] [--class CLASS]          write a plan; apply needs --apply --plan ID
      [--plan-dir PATH]                    store a reviewed plan outside the state root if needed
+  migrate [--dry-run] [--plan-dir PATH]   plan legacy manifests; apply needs --apply --plan ID
   pin add|rm|list                         protect paths from cleanup
   doctor                                  inspect local configuration and dependencies
   ledger path <project> <goal-id>         print a canonical ledger path
@@ -265,6 +266,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return lintCommand(cfg, args[1:], stdout, stderr)
 	case "gc":
 		return gcCommand(cfg, args[1:], stdout, stderr)
+	case "migrate":
+		return migrateCommand(cfg, args[1:], stdout, stderr)
 	case "pin":
 		return pinCommand(cfg, args[1:], stdout, stderr)
 	case "doctor":
