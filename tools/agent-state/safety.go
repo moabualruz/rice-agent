@@ -425,15 +425,16 @@ func ledgerIsOpen(doc any) bool {
 	if !ok {
 		return true
 	}
-	switch goal["status"] {
-	case "closed", "completed", "archived":
-		return false
-	}
+	// A running attempt takes precedence over contradictory terminal goal state.
 	attempts, _ := goal["attempts"].([]any)
 	for _, value := range attempts {
 		if attempt, ok := value.(map[string]any); ok && attempt["result"] == "running" {
 			return true
 		}
+	}
+	switch goal["status"] {
+	case "closed", "completed", "archived":
+		return false
 	}
 	criteria, ok := goal["criteria"].([]any)
 	if !ok || len(criteria) == 0 {

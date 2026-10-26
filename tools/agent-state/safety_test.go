@@ -121,6 +121,9 @@ func TestLedgerProtectionHonorsGoalLifecycle(t *testing.T) {
 		{"closed-criteria", map[string]any{"criteria": []any{map[string]any{"status": "closed"}, map[string]any{"status": "deferred"}}}, false},
 		{"open-criterion", map[string]any{"criteria": []any{map[string]any{"status": "closed"}, map[string]any{"status": "ready"}}}, true},
 		{"running-attempt", map[string]any{"criteria": []any{map[string]any{"status": "closed"}}, "attempts": []any{map[string]any{"result": "running"}}}, true},
+		{"closed-status-with-running-attempt", map[string]any{"status": "closed", "attempts": []any{map[string]any{"result": "running"}}}, true},
+		{"completed-status-with-running-attempt", map[string]any{"status": "completed", "attempts": []any{map[string]any{"result": "running"}}}, true},
+		{"archived-status-with-running-attempt", map[string]any{"status": "archived", "attempts": []any{map[string]any{"result": "running"}}}, true},
 		{"unknown-status", map[string]any{"status": "unknown"}, true},
 		{"legacy-no-status", nil, true},
 	} {
