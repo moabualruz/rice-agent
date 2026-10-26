@@ -50,10 +50,10 @@ EOF
   *) printf '%s\n' 'git-canonical-gate: unexpected argument; see --help' >&2; exit 2 ;;
 esac
 
-while IFS= read -r name; do
-  case "$name" in GIT_*) unset "$name" ;; esac
-done < <(compgen -e)
 command -v git >/dev/null 2>&1 || { printf '%s\n' 'git-canonical-gate: git is required' >&2; exit 3; }
+root="$(/usr/bin/env -i PATH="$PATH" git -C "$PWD" rev-parse --show-toplevel)"
+cd "$root"
+for name in $(git rev-parse --local-env-vars); do unset "$name"; done
 if canonical=$(git config --local --get rice.canonicalGateRoot 2>/dev/null); then
   export RICE_CANONICAL_GATE_ROOT="$canonical"
 else
