@@ -163,21 +163,11 @@ func migrationLedgers(cfg config, project string) ([]migrationLedger, error) {
 
 func migrationGoal(bundle string, ledgers []migrationLedger) (migrationLedger, string) {
 	var matches []migrationLedger
-	project := filepath.Base(filepath.Dir(filepath.Dir(bundle)))
 	for _, ledger := range ledgers {
 		refs := map[string]bool{}
 		for _, value := range ledger.Values {
-			if strings.HasPrefix(value, "agent-state://") {
-				parts := strings.Split(strings.TrimPrefix(value, "agent-state://"), "/")
-				if len(parts) >= 2 && parts[0] == project && parts[1] == filepath.Base(bundle) {
-					refs[value] = true
-				}
-			} else if filepath.IsAbs(value) {
-				resolved, err := canonicalPath(value)
-				if err != nil {
-					return migrationLedger{}, "ledger_inference_unavailable"
-				}
-				refs[resolved] = true
+			if strings.HasPrefix(value, "agent-state://") || filepath.IsAbs(value) {
+				refs[value] = true
 			}
 		}
 		if ledger.GoalID == filepath.Base(bundle) || ledgerReferencesPath(refs, bundle) {
