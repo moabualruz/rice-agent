@@ -187,19 +187,57 @@ func pathInUse(candidate string, openPaths []string) bool {
 	}
 	candidate = resolved
 	for _, p := range openPaths {
-		if !filepath.IsAbs(p) {
-			continue
-		}
-		resolved, err := canonicalPath(p)
-		if err != nil {
-			return true
-		}
-		p = resolved
-		if p == candidate || inside(candidate, p) {
+		if referenceTargetsPath(candidate, p) {
 			return true
 		}
 	}
 	return false
+}
+
+// Resolution uncertainty protects the named subtree, not every bundle. Resolve
+// the nearest usable ancestor so aliases into a bundle stay protected even when
+// a descendant is unreadable, a dangling link or an overlong path-plus-prose value.
+func referenceTargetsPath(candidate, reference string) bool {
+	if !filepath.IsAbs(reference) {
+		return false
+	}
+	reference = filepath.Clean(reference)
+	seen := map[string]bool{}
+	var suffix []string
+	for {
+		if reference == candidate || inside(candidate, reference) {
+			return true
+		}
+		resolved, err := canonicalPath(reference)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved == candidate || inside(candidate, resolved)
+		}
+		// EvalSymlinks cannot resolve a dangling target. Read the link before
+		// dropping its name, or an external alias into the bundle would be lost.
+		if target, err := os.Readlink(reference); err == nil {
+			if seen[reference] {
+				return false
+			}
+			seen[reference] = true
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(reference), target)
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				target = filepath.Join(target, suffix[i])
+			}
+			reference, suffix = target, nil
+			continue
+		}
+		parent := filepath.Dir(reference)
+		if parent == reference {
+			return false
+		}
+		suffix = append(suffix, filepath.Base(reference))
+		reference = parent
+	}
 }
 
 func pinBlocks(path string, pins []pin) bool {
@@ -334,7 +372,7 @@ func collectActiveLedgerRefs(cfg config) (map[string]bool, error) {
 			return errors.New("ledger scan encountered invalid JSON")
 		}
 		active, values := ledgerFacts(doc, cutoff, futureLimit)
-		if active {
+		if active && ledgerIsOpen(doc) {
 			for _, value := range values {
 				if strings.HasPrefix(value, "agent-state://") {
 					refs[value] = true
@@ -380,6 +418,36 @@ func ledgerFacts(doc any, cutoff, futureLimit time.Time) (bool, []string) {
 	return active, values
 }
 
+// Unknown legacy lifecycle information remains protected. Native v1 ledgers
+// close through criterion statuses rather than a top-level goal status.
+func ledgerIsOpen(doc any) bool {
+	goal, ok := doc.(map[string]any)
+	if !ok {
+		return true
+	}
+	switch goal["status"] {
+	case "closed", "completed", "archived":
+		return false
+	}
+	attempts, _ := goal["attempts"].([]any)
+	for _, value := range attempts {
+		if attempt, ok := value.(map[string]any); ok && attempt["result"] == "running" {
+			return true
+		}
+	}
+	criteria, ok := goal["criteria"].([]any)
+	if !ok || len(criteria) == 0 {
+		return true
+	}
+	for _, value := range criteria {
+		criterion, ok := value.(map[string]any)
+		if !ok || criterion["status"] != "closed" && criterion["status"] != "deferred" {
+			return true
+		}
+	}
+	return false
+}
+
 func ledgerReferencesPath(refs map[string]bool, candidate string) bool {
 	resolved, err := canonicalPath(candidate)
 	if err != nil {
@@ -390,17 +458,12 @@ func ledgerReferencesPath(refs map[string]bool, candidate string) bool {
 		if strings.HasPrefix(ref, "agent-state://") {
 			refPath := strings.TrimPrefix(ref, "agent-state://")
 			parts := strings.SplitN(refPath, "/", 3)
-			if len(parts) >= 2 && filepath.Base(candidate) == parts[1] {
+			if len(parts) >= 2 && filepath.Base(filepath.Dir(candidate)) == "evidence" && filepath.Base(filepath.Dir(filepath.Dir(candidate))) == parts[0] && filepath.Base(candidate) == parts[1] {
 				return true
 			}
 			continue
 		}
-		resolved, err := canonicalPath(ref)
-		if err != nil {
-			return true
-		}
-		ref = resolved
-		if ref == candidate || strings.HasPrefix(ref, candidate+string(filepath.Separator)) {
+		if referenceTargetsPath(candidate, ref) {
 			return true
 		}
 	}
