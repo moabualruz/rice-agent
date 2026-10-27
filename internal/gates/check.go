@@ -386,7 +386,7 @@ func (c *checker) static(t *manifest.Tool) gateResult {
 
 // G5: the manifest test command passes in the tool directory.
 func (c *checker) behavior(t *manifest.Tool) gateResult {
-	r := runProc(t.Dir, testTimeout, true, "bash", "-c", t.Test)
+	r := runToolTest(t)
 	switch {
 	case r.startErr != nil:
 		return envFailf("run test %q: %v", t.Test, r.startErr)

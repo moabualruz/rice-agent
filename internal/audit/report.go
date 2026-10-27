@@ -158,7 +158,17 @@ type baoMetric struct {
 type hygiene struct {
 	TrialOlder30d       []string `json:"trial_older_than_30d"`
 	Unused              []string `json:"unused_in_window"`
+	Unused60d           []string `json:"unused_60d"`
+	FailingTests        []string `json:"failing_tests"`
 	PromotionCandidates []string `json:"promotion_candidates"`
+	Promoted            []string `json:"promoted"`
+}
+
+type hygieneEvidence struct {
+	usage               *collector
+	failedTests         []string
+	promotionCandidates []string
+	promoted            []string
 }
 
 func ratio(n, d int) *float64 {
@@ -170,7 +180,7 @@ func ratio(n, d int) *float64 {
 }
 
 // build turns the collector state into the report.
-func build(c *collector, tools []*manifest.Tool, info transcriptInfo, now time.Time) report {
+func build(c *collector, tools []*manifest.Tool, info transcriptInfo, now time.Time, evidence hygieneEvidence) report {
 	r := report{Schema: "audit/v1", Tools: len(tools), Transcripts: info}
 	r.Transcripts.Sessions = len(c.sessions)
 	r.Transcripts.ToolUses = c.toolUses
@@ -221,8 +231,27 @@ func build(c *collector, tools []*manifest.Tool, info transcriptInfo, now time.T
 	r.OpenBao = baoMetric{Logins: c.baoLogins, Sessions: len(c.baoSess), BaoRun: c.baoRun, Baseline: baseBao, Target: tgtBao}
 
 	if len(tools) > 0 {
-		h := &hygiene{TrialOlder30d: []string{}, Unused: []string{}, PromotionCandidates: []string{}}
+		h := &hygiene{
+			TrialOlder30d: []string{}, Unused: []string{}, Unused60d: []string{},
+			FailingTests: evidence.failedTests, PromotionCandidates: evidence.promotionCandidates,
+			Promoted: evidence.promoted,
+		}
+		if h.FailingTests == nil {
+			h.FailingTests = []string{}
+		}
+		if h.PromotionCandidates == nil {
+			h.PromotionCandidates = []string{}
+		}
+		if h.Promoted == nil {
+			h.Promoted = []string{}
+		}
 		old := now.AddDate(0, 0, -30)
+		usageByName := map[string]*toolStat{}
+		if evidence.usage != nil {
+			for _, stat := range evidence.usage.tools {
+				usageByName[stat.tool.Name] = stat
+			}
+		}
 		for _, t := range c.tools {
 			if !t.tool.Listed() {
 				continue
@@ -231,12 +260,12 @@ func build(c *collector, tools []*manifest.Tool, info transcriptInfo, now time.T
 				if d, err := time.Parse("2006-01-02", t.tool.Origin.Date); err == nil && d.Before(old) {
 					h.TrialOlder30d = append(h.TrialOlder30d, t.tool.Name)
 				}
-				if len(t.okSess) >= 2 {
-					h.PromotionCandidates = append(h.PromotionCandidates, t.tool.Name)
-				}
 			}
 			if t.invocations == 0 {
 				h.Unused = append(h.Unused, t.tool.Name)
+			}
+			if usageByName[t.tool.Name] == nil || usageByName[t.tool.Name].invocations == 0 {
+				h.Unused60d = append(h.Unused60d, t.tool.Name)
 			}
 		}
 		r.Hygiene = h
@@ -391,7 +420,10 @@ func writeText(w io.Writer, r report) error {
 	if r.Hygiene != nil {
 		row("7 trial older than 30 days", names(r.Hygiene.TrialOlder30d), "", "")
 		row("  unused in window", names(r.Hygiene.Unused), "", "")
+		row("  unused in 60 days", names(r.Hygiene.Unused60d), "", "")
+		row("  failing tool tests", names(r.Hygiene.FailingTests), "", "")
 		row("  promotion candidates", names(r.Hygiene.PromotionCandidates), "", "")
+		row("  promoted", names(r.Hygiene.Promoted), "", "")
 	}
 
 	m := r.Misses

@@ -37,6 +37,7 @@ func testdata(t *testing.T, parts ...string) string {
 type fixture struct {
 	projects string
 	home     string
+	root     string
 	config   string
 	vars     map[string]string
 }
@@ -83,6 +84,29 @@ func setup(t *testing.T, mtimes map[string]time.Time) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	srcRoot := testdata(t, "root")
+	f.root = filepath.Join(tmp, "root")
+	err = filepath.WalkDir(srcRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(srcRoot, p)
+		dst := filepath.Join(f.root, rel)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, raw, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "tools", "check-no-dashes", "test.sh"), []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	f.config = filepath.Join(tmp, "config.json")
 	f.writeConfig(t, map[string]any{
 		"hosts": map[string]any{
@@ -93,7 +117,7 @@ func setup(t *testing.T, mtimes map[string]time.Time) *fixture {
 	})
 	f.vars = map[string]string{
 		"HOME":             f.home,
-		"AGENT_DRY_ROOT":   testdata(t, "root"),
+		"AGENT_DRY_ROOT":   f.root,
 		"AGENT_DRY_CONFIG": f.config,
 		"AGENT_DRY_STATE":  testdata(t, "state"),
 	}
@@ -241,6 +265,20 @@ func TestMetrics(t *testing.T) {
 	eqs(t, "trial older than 30d", r.Hygiene.TrialOlder30d, "legacy-sync")
 	eqs(t, "unused", r.Hygiene.Unused, "legacy-sync")
 	eqs(t, "promotion", r.Hygiene.PromotionCandidates, "check-no-dashes")
+	eqs(t, "promoted", r.Hygiene.Promoted, "check-no-dashes")
+	eqs(t, "failing tests", r.Hygiene.FailingTests, "legacy-sync", "stable-tool")
+	eqs(t, "unused for 60 days", r.Hygiene.Unused60d, "legacy-sync")
+	manifestBytes, err := os.ReadFile(filepath.Join(f.root, "tools", "check-no-dashes", "tool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var promotedManifest struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(manifestBytes, &promotedManifest); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "promoted manifest status", promotedManifest.Status, "active")
 
 	// 8
 	m := r.Misses
@@ -258,6 +296,42 @@ func TestMetrics(t *testing.T) {
 }
 
 // TestRedaction proves no command text, address, path or secret-like token reaches either output.
+func TestUnusedSixtyDaysIsIndependentOfReportWindow(t *testing.T) {
+	f := setup(t, map[string]time.Time{
+		sessA:   fixedNow.Add(-45 * 24 * time.Hour),
+		sessB:   fixedNow.Add(-45 * 24 * time.Hour),
+		"agent": fixedNow.Add(-45 * 24 * time.Hour),
+	})
+	r := f.report(t, "--since", "14d")
+	if !contains(r.Hygiene.Unused, "check-no-dashes") {
+		t.Fatalf("check-no-dashes should be unused in the report window: %v", r.Hygiene.Unused)
+	}
+	if contains(r.Hygiene.Unused60d, "check-no-dashes") {
+		t.Fatalf("check-no-dashes was used in the last 60 days: %v", r.Hygiene.Unused60d)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFailingToolTestPreventsPromotion(t *testing.T) {
+	f := setup(t, nil)
+	if err := os.WriteFile(filepath.Join(f.root, "tools", "check-no-dashes", "test.sh"), []byte("exit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := f.report(t)
+	eqs(t, "failing tests", r.Hygiene.FailingTests, "check-no-dashes", "legacy-sync", "stable-tool")
+	if len(r.Hygiene.Promoted) != 0 {
+		t.Fatalf("failing test promoted a tool: %v", r.Hygiene.Promoted)
+	}
+}
+
 func TestRedaction(t *testing.T) {
 	f := setup(t, nil)
 	var commands []string
@@ -349,8 +423,8 @@ func TestTextTable(t *testing.T) {
 		"4 raw ssh per touching session", "2.0 (6 commands, 3 sessions)", "about 100", "alpha-host",
 		"5 hand-built OpenBao logins", "2 (1 sessions)",
 		"6 copies: check-no-dashes", "4 copies, 3 variants, 1 identical", "10 copies, 5 variants",
-		"7 trial older than 30 days", "legacy-sync", "promotion candidates", "check-no-dashes",
-		"8 find misses", "5 in window of 6", "host run ssh (2)",
+		"7 trial older than 30 days", "legacy-sync", "unused in 60 days", "failing tool tests",
+		"promotion candidates", "check-no-dashes", "promoted", "8 find misses", "5 in window of 6", "host run ssh (2)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text report lacks %q\n%s", want, out)

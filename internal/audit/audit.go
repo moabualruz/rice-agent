@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/agent-dry/internal/gates"
 	"github.com/moabualruz/agent-dry/internal/manifest"
 	"github.com/moabualruz/agent-dry/internal/paths"
 )
@@ -27,12 +28,13 @@ const usageText = `Usage: agent-dry audit [--since 14d] [--transcripts <dir>] [-
 
 Measure lookup, reuse and re-typing (spec section 10) from Claude Code transcripts, Codex sessions,
 the find miss log and the tool manifests, against the recorded baselines. Reports agent-dry
-find/new/check/guide counts by day, host and harness. Prints counts, tool names, configured host
-names and miss tokens only; never command text.
+find/new/check/guide counts by day, host and harness, failing tool tests and 60-day inactivity. A
+trial tool with successful use in two distinct sessions and a passing test is promoted to active.
+Prints counts, tool names, configured host names and miss tokens only; never command text.
 
 Options:
-  --since D          window: Nd or Nw (from local midnight), Nh or a Go duration (default 14d);
-                     files modified and tool calls made before it are skipped
+  --since D          report window: Nd or Nw (from local midnight), Nh or a Go duration (default 14d);
+                     60-day inactivity and promotion usage are measured independently
   --transcripts DIR  Claude transcript root (default ~/.claude/projects); also reads
                      ~/.codex/sessions/YYYY/MM/DD/*.jsonl; session id is the file stem
   --max-files N      read at most N files, main sessions first, newest first (default 1000; 0 = no bound)
@@ -145,39 +147,63 @@ func run(env *cli.Env) int {
 	files = append(files, codexFiles...)
 	files, notRead := limitTranscripts(files, *maxFiles)
 
-	c := newCollector(tools, cfg.Hosts, warn)
-	info := transcriptInfo{NotRead: notRead}
 	localHost := env.Getenv("HOSTNAME")
 	if localHost == "" {
 		localHost, _ = os.Hostname()
 	}
-	for _, f := range files {
-		session := f.harness + ":" + f.session
-		add := func(ev event) {
-			ev.host = c.commandHost(ev.cmd, localHost)
-			c.add(session, ev)
-		}
-		var scanErr error
-		if f.harness == "codex" {
-			scanErr = scanCodexFile(f.path, cutoff, add)
-		} else {
-			scanErr = scanFile(f.path, cutoff, add, c.wantResult, c.result)
-		}
-		c.endFile()
-		if scanErr != nil {
-			info.Unreadable++
-			warn("transcript %s: %v", filepath.Base(f.path), scanErr)
+	c, info := collectTranscripts(files, cutoff, tools, cfg.Hosts, localHost, warn)
+	info.NotRead = notRead
+
+	usageCutoff := end.Add(-60 * 24 * time.Hour)
+	usageFiles, _, err := discover(tdir, usageCutoff, 0)
+	if err != nil {
+		return cli.Envf(env, "audit: transcript root for 60-day usage: %v", err)
+	}
+	usageCodexFiles, err := discoverCodex(filepath.Join(home, ".codex", "sessions"), usageCutoff)
+	if err != nil {
+		return cli.Envf(env, "audit: Codex sessions for 60-day usage: %v", err)
+	}
+	usageFiles = append(usageFiles, usageCodexFiles...)
+	usageFiles, usageNotRead := limitTranscripts(usageFiles, *maxFiles)
+	if usageNotRead > 0 {
+		warn("60-day usage incomplete: %d transcripts not read (--max-files)", usageNotRead)
+	}
+	usage, _ := collectTranscripts(usageFiles, usageCutoff, tools, cfg.Hosts, localHost, warn)
+
+	failedTests := make([]string, 0)
+	testPassed := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if !tool.Listed() {
 			continue
 		}
-		info.Files++
-		if f.subagent {
-			info.Subagent++
-		} else {
-			info.Main++
+		passed := gates.ToolTestPasses(tool)
+		testPassed[tool.Name] = passed
+		if !passed {
+			failedTests = append(failedTests, tool.Name)
 		}
 	}
 
-	r := build(c, tools, info, end)
+	promotionCandidates := make([]string, 0)
+	promoted := make([]string, 0)
+	for _, stat := range usage.tools {
+		if stat.tool.Status != "trial" || len(stat.okSess) < 2 || !testPassed[stat.tool.Name] {
+			continue
+		}
+		promotionCandidates = append(promotionCandidates, stat.tool.Name)
+		changed, err := manifest.PromoteIfTrial(stat.tool)
+		if err != nil {
+			warn("tool %s promotion failed: %v", stat.tool.Name, err)
+			continue
+		}
+		if changed {
+			promoted = append(promoted, stat.tool.Name)
+		}
+	}
+	evidence := hygieneEvidence{
+		usage: usage, failedTests: failedTests,
+		promotionCandidates: promotionCandidates, promoted: promoted,
+	}
+	r := build(c, tools, info, end, evidence)
 	r.Window = windowInfo{Since: *since, From: cutoff.Format("2006-01-02"), To: end.Format("2006-01-02")}
 
 	misses, err := summarizeMisses(filepath.Join(paths.StateDir(env.Getenv), "misses.jsonl"), cutoff)
@@ -208,4 +234,35 @@ func run(env *cli.Env) int {
 		return cli.ExitNegative
 	}
 	return cli.ExitOK
+}
+
+func collectTranscripts(files []transcript, cutoff time.Time, tools []*manifest.Tool, hosts map[string]paths.Host, localHost string, warn func(string, ...any)) (*collector, transcriptInfo) {
+	c := newCollector(tools, hosts, warn)
+	info := transcriptInfo{}
+	for _, f := range files {
+		session := f.harness + ":" + f.session
+		add := func(ev event) {
+			ev.host = c.commandHost(ev.cmd, localHost)
+			c.add(session, ev)
+		}
+		var scanErr error
+		if f.harness == "codex" {
+			scanErr = scanCodexFile(f.path, cutoff, add)
+		} else {
+			scanErr = scanFile(f.path, cutoff, add, c.wantResult, c.result)
+		}
+		c.endFile()
+		if scanErr != nil {
+			info.Unreadable++
+			warn("transcript %s: %v", filepath.Base(f.path), scanErr)
+			continue
+		}
+		info.Files++
+		if f.subagent {
+			info.Subagent++
+		} else {
+			info.Main++
+		}
+	}
+	return c, info
 }
