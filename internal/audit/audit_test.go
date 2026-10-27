@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/agent-dry/internal/manifest"
 )
 
 var fixedNow = time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
@@ -45,8 +47,13 @@ type fixture struct {
 func setup(t *testing.T, mtimes map[string]time.Time) *fixture {
 	t.Helper()
 	old := now
+	oldHermesLookPath := hermesLookPath
 	now = func() time.Time { return fixedNow }
-	t.Cleanup(func() { now = old })
+	hermesLookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() {
+		now = old
+		hermesLookPath = oldHermesLookPath
+	})
 
 	tmp := t.TempDir()
 	f := &fixture{projects: filepath.Join(tmp, "projects"), home: filepath.Join(tmp, "home")}
@@ -546,6 +553,46 @@ func TestParseSince(t *testing.T) {
 		if _, err := parseSince(in); err == nil {
 			t.Errorf("parseSince(%q) accepted", in)
 		}
+	}
+}
+
+func TestHermesExportIsParsedWithoutPrintingCommands(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes")
+	line := `{"id":"session-a","messages":[{"role":"assistant","timestamp":1792238400,"tool_calls":[{"id":"call-a","function":{"name":"terminal","arguments":"{\"command\":\"agent-dry find audit && agent-dry check-no-dashes\"}"}}]},{"role":"tool","tool_call_id":"call-a","content":"{\"output\":\"ok\",\"exit_code\":0}"}]}`
+	script := "#!/bin/sh\nprintf '%s\\n' '" + line + "'\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := hermesLookPath
+	hermesLookPath = func(string) (string, error) { return path, nil }
+	t.Cleanup(func() { hermesLookPath = old })
+
+	var warnings []string
+	c := newCollector([]*manifest.Tool{{Name: "check-no-dashes"}}, nil, func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+	info, notRead := collectHermes(c, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 0, func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+	eq(t, "files", info.Files, 1)
+	eq(t, "not read", notRead, 0)
+	eq(t, "tool uses", c.toolUses, 1)
+	eq(t, "bash commands", c.bashCommands, 1)
+	eq(t, "find commands", c.findCommands, 1)
+	eq(t, "tool invocations", c.tools[0].invocations, 1)
+	if !c.tools[0].okSess["hermes:session-a"] {
+		t.Fatal("successful Hermes tool result did not count as a successful use")
+	}
+	if strings.Join(warnings, " ") != "" {
+		t.Fatalf("unexpected warning: %v", warnings)
+	}
+}
+
+func TestHermesUnknownToolResultFailsClosed(t *testing.T) {
+	line := []byte(`{"id":"session-a","messages":[{"role":"assistant","tool_calls":[{"id":"call-a","function":{"name":"terminal","arguments":"{\"command\":\"agent-dry check-no-dashes\"}"}}]},{"role":"tool","tool_call_id":"call-a","content":"unstructured result"}]}`)
+	_, events, results, ok := scanHermesLine(line, time.Time{})
+	if !ok || len(events) != 1 || len(results) != 1 || !results[0].isError {
+		t.Fatalf("Hermes parse = ok:%v events:%d results:%+v", ok, len(events), results)
 	}
 }
 

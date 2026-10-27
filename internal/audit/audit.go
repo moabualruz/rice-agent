@@ -3,10 +3,13 @@
 package audit
 
 import (
+	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -21,12 +24,13 @@ import (
 // defaultMaxFiles bounds a run; main sessions are read before subagent transcripts.
 const defaultMaxFiles = 1000
 
-// now is replaced by tests.
+// now and hermesLookPath are replaced by tests.
 var now = time.Now
+var hermesLookPath = exec.LookPath
 
 const usageText = `Usage: agent-dry audit [--since 14d] [--transcripts <dir>] [--max-files N] [--json]
 
-Measure lookup, reuse and re-typing (spec section 10) from Claude Code transcripts, Codex sessions,
+Measure lookup, reuse and re-typing (spec section 10) from Claude Code, Codex and Hermes sessions,
 the find miss log and the tool manifests, against the recorded baselines. Reports agent-dry
 find/new/check/guide counts by day, host and harness, failing tool tests and 60-day inactivity. A
 trial tool with successful use in two distinct sessions and a passing test is promoted to active.
@@ -36,7 +40,7 @@ Options:
   --since D          report window: Nd or Nw (from local midnight), Nh or a Go duration (default 14d);
                      60-day inactivity and promotion usage are measured independently
   --transcripts DIR  Claude transcript root (default ~/.claude/projects); also reads
-                     ~/.codex/sessions/YYYY/MM/DD/*.jsonl; session id is the file stem
+                     ~/.codex/sessions/YYYY/MM/DD/*.jsonl and Hermes JSONL from its export CLI
   --max-files N      read at most N files, main sessions first, newest first (default 1000; 0 = no bound)
   --json             print the report as JSON (schema audit/v1)
 
@@ -153,6 +157,9 @@ func run(env *cli.Env) int {
 	}
 	c, info := collectTranscripts(files, cutoff, tools, cfg.Hosts, localHost, warn)
 	info.NotRead = notRead
+	hermesInfo, hermesNotRead := collectHermes(c, cutoff, remainingFiles(*maxFiles, len(files)), warn)
+	addTranscriptInfo(&info, hermesInfo)
+	info.NotRead += hermesNotRead
 
 	usageCutoff := end.Add(-60 * 24 * time.Hour)
 	usageFiles, _, err := discover(tdir, usageCutoff, 0)
@@ -169,6 +176,10 @@ func run(env *cli.Env) int {
 		warn("60-day usage incomplete: %d transcripts not read (--max-files)", usageNotRead)
 	}
 	usage, _ := collectTranscripts(usageFiles, usageCutoff, tools, cfg.Hosts, localHost, warn)
+	_, hermesUsageNotRead := collectHermes(usage, usageCutoff, remainingFiles(*maxFiles, len(usageFiles)), warn)
+	if hermesUsageNotRead > 0 {
+		warn("60-day usage incomplete: %d Hermes sessions not read (--max-files)", hermesUsageNotRead)
+	}
 
 	failedTests := make([]string, 0)
 	testPassed := make(map[string]bool, len(tools))
@@ -234,6 +245,78 @@ func run(env *cli.Env) int {
 		return cli.ExitNegative
 	}
 	return cli.ExitOK
+}
+
+func remainingFiles(maxFiles, used int) int {
+	if maxFiles <= 0 {
+		return 0
+	}
+	if used >= maxFiles {
+		return -1
+	}
+	return maxFiles - used
+}
+
+func addTranscriptInfo(dst *transcriptInfo, src transcriptInfo) {
+	dst.Files += src.Files
+	dst.Main += src.Main
+	dst.Subagent += src.Subagent
+	dst.Unreadable += src.Unreadable
+	dst.Sessions += src.Sessions
+	dst.ToolUses += src.ToolUses
+	dst.BashCommands += src.BashCommands
+	dst.DuplicateIDs += src.DuplicateIDs
+}
+
+func collectHermes(c *collector, cutoff time.Time, maxFiles int, warn func(string, ...any)) (transcriptInfo, int) {
+	var info transcriptInfo
+	hermes, err := hermesLookPath("hermes")
+	if err != nil {
+		return info, 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, hermes, "sessions", "export", "--format", "jsonl", "--newer-than", cutoff.UTC().Format(time.RFC3339), "-")
+	cmd.Stderr = io.Discard
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		warn("Hermes export could not start")
+		return info, 0
+	}
+	if err := cmd.Start(); err != nil {
+		warn("Hermes export could not start")
+		return info, 0
+	}
+	var notRead int
+	err = eachLine(stdout, func(line []byte) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			return
+		}
+		if maxFiles < 0 || (maxFiles > 0 && info.Files >= maxFiles) {
+			notRead++
+			return
+		}
+		session, events, results, ok := scanHermesLine(line, cutoff)
+		if !ok {
+			info.Unreadable++
+			return
+		}
+		for _, ev := range events {
+			ev.harness = "hermes"
+			c.add("hermes:"+session, ev)
+		}
+		for _, r := range results {
+			c.result(r)
+		}
+		c.endFile()
+		info.Files++
+		info.Main++
+	})
+	waitErr := cmd.Wait()
+	if err != nil || waitErr != nil {
+		warn("Hermes export failed or returned unreadable data")
+	}
+	return info, notRead
 }
 
 func collectTranscripts(files []transcript, cutoff time.Time, tools []*manifest.Tool, hosts map[string]paths.Host, localHost string, warn func(string, ...any)) (*collector, transcriptInfo) {

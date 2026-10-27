@@ -264,6 +264,112 @@ func discoverCodex(dir string, cutoff time.Time) ([]transcript, error) {
 	return out, nil
 }
 
+type hermesSessionRecord struct {
+	ID       string          `json:"id"`
+	Messages []hermesMessage `json:"messages"`
+}
+
+type hermesMessage struct {
+	Role       string           `json:"role"`
+	Timestamp  json.RawMessage  `json:"timestamp"`
+	ToolCallID string           `json:"tool_call_id"`
+	ToolCalls  []hermesToolCall `json:"tool_calls"`
+	Content    json.RawMessage  `json:"content"`
+}
+
+type hermesToolCall struct {
+	ID       string `json:"id"`
+	Function struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
+}
+
+func scanHermesLine(line []byte, cutoff time.Time) (string, []event, []result, bool) {
+	var session hermesSessionRecord
+	if json.Unmarshal(line, &session) != nil || session.ID == "" {
+		return "", nil, nil, false
+	}
+	var events []event
+	var results []result
+	for _, message := range session.Messages {
+		at := parseTranscriptTime(message.Timestamp)
+		if !at.IsZero() && at.Before(cutoff) {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if call.ID == "" || call.Function.Name == "" {
+				continue
+			}
+			tool, command := hermesTool(call.Function.Name, call.Function.Arguments)
+			events = append(events, event{
+				id: "hermes:" + session.ID + ":" + call.ID, tool: tool, cmd: command,
+				at: at, harness: "hermes",
+			})
+		}
+		if message.Role == "tool" && message.ToolCallID != "" {
+			results = append(results, result{
+				id:      "hermes:" + session.ID + ":" + message.ToolCallID,
+				isError: hermesToolResultFailed(message.Content),
+			})
+		}
+	}
+	return session.ID, events, results, true
+}
+
+func parseTranscriptTime(raw json.RawMessage) time.Time {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return time.Time{}
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		at, _ := time.Parse(time.RFC3339Nano, text)
+		return at
+	}
+	var seconds float64
+	if json.Unmarshal(raw, &seconds) != nil {
+		return time.Time{}
+	}
+	return time.Unix(0, int64(seconds*float64(time.Second)))
+}
+
+func hermesTool(name string, raw json.RawMessage) (string, string) {
+	switch name {
+	case "terminal":
+		var args struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(raw, &args) != nil {
+			var encoded string
+			if json.Unmarshal(raw, &encoded) == nil {
+				_ = json.Unmarshal([]byte(encoded), &args)
+			}
+		}
+		return "Bash", args.Command
+	case "write_file":
+		return "Write", ""
+	case "patch":
+		return "Edit", ""
+	default:
+		return name, ""
+	}
+}
+
+func hermesToolResultFailed(raw json.RawMessage) bool {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		raw = []byte(text)
+	}
+	var status struct {
+		ExitCode *int   `json:"exit_code"`
+		Error    string `json:"error"`
+	}
+	if json.Unmarshal(raw, &status) != nil || status.ExitCode == nil {
+		return true
+	}
+	return *status.ExitCode != 0 || status.Error != ""
+}
+
 func limitTranscripts(files []transcript, maxFiles int) ([]transcript, int) {
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].subagent != files[j].subagent {
