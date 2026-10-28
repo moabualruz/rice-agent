@@ -322,7 +322,7 @@ expect_in "--skip-ci-check says so" err "CI not checked (--skip-ci-check)"
 # ---------- dry run ----------
 
 make_clone "$tmp/clone-pc" "$A"
-make_clone "$HOME/workspace/rice-agent" "$C"
+make_clone "$HOME/workspace/agent-dry" "$C"
 expect_exit "dry run exits 0" 0 deploy v9.9.9 --dry-run
 expect_in "dry run says nothing is contacted" out "no configured host is contacted"
 expect_in "dry run prints the clean export" out "+ git -C $dev archive $B | tar -x -C $tmp/t/rice-agent-deploy.XXXXXX/root"
@@ -366,8 +366,8 @@ expect_line "the bundle install runs from the temporary root" log "^rice-agent i
 expect_line "the build ran in the clean export" log "^go build -o $tmp/t/rice-agent-deploy\\.[A-Za-z0-9]+/root/bin/rice-agent .* \\(in $tmp/t/rice-agent-deploy\\.[A-Za-z0-9]+/root\\)$"
 expect_eq "the local binary reports the tag" "$("$dev/bin/rice-agent" version)" v9.9.9
 expect_eq "pc main is at the tag" "$(branch_of "$tmp/clone-pc") $(head_of "$tmp/clone-pc")" "main $B"
-expect_eq "dflt is detached at the tag" "$(branch_of "$HOME/workspace/rice-agent") $(head_of "$HOME/workspace/rice-agent")" "detached $B"
-expect_eq "dflt main is untouched" "$(g -C "$HOME/workspace/rice-agent" rev-parse refs/heads/main)" "$C"
+expect_eq "dflt is detached at the tag" "$(branch_of "$HOME/workspace/agent-dry") $(head_of "$HOME/workspace/agent-dry")" "detached $B"
+expect_eq "dflt main is untouched" "$(g -C "$HOME/workspace/agent-dry" rev-parse refs/heads/main)" "$C"
 expect_eq "the clone build reports the tag" "$("$tmp/clone-pc/bin/rice-agent" version)" v9.9.9
 expect_line "the clone install uses the clone as root" log "^rice-agent install root=$tmp/clone-pc exe=bin/rice-agent$"
 leftover=$(find "$tmp/t" -maxdepth 1 -name 'rice-agent-deploy.*' | wc -l | tr -d ' ')
