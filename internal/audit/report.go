@@ -10,10 +10,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/manifest"
 )
 
-// Baselines from the agent-dry local evidence study (2026-09-15 to 2026-10-17), spec section 10.
+// Baselines from the rice-agent local evidence study (2026-09-15 to 2026-10-17), spec section 10.
 const (
 	baseLookup = "0"
 	baseMerge  = "18.6"
@@ -342,7 +342,7 @@ func names(list []string) string {
 // writeText prints the compact table: counts, tool names, host names and miss tokens only.
 func writeText(w io.Writer, r report) error {
 	t := r.Transcripts
-	fmt.Fprintf(w, "agent-dry audit: window %s (%s to %s)\n", r.Window.Since, r.Window.From, r.Window.To)
+	fmt.Fprintf(w, "rice-agent audit: window %s (%s to %s)\n", r.Window.Since, r.Window.From, r.Window.To)
 	more := ""
 	if t.NotRead > 0 {
 		more = fmt.Sprintf("; %d more not read (--max-files)", t.NotRead)
@@ -443,7 +443,7 @@ func writeText(w io.Writer, r report) error {
 		}
 		row("8 find misses", v, "", "")
 	}
-	row("9 agent-dry commands", "find/new/check/guide", "", "")
+	row("9 rice-agent commands", "find/new/check/guide", "", "")
 	for i, usage := range r.CommandUsage.ByDay {
 		if i == maxUsageRows {
 			row("  ...", fmt.Sprintf("+%d days (see --json)", len(r.CommandUsage.ByDay)-maxUsageRows), "", "")

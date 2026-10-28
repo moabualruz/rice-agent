@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/registry"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
 func init() {

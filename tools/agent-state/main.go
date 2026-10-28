@@ -154,11 +154,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if raw, err := os.ReadFile(cfgPath); err == nil {
 		var parsed fileConfig
 		if err := json.Unmarshal(raw, &parsed); err != nil {
-			return c, fmt.Errorf("read agent-dry config: invalid JSON")
+			return c, fmt.Errorf("read rice-agent config: invalid JSON")
 		}
 		mergeConfig(&c, parsed.AgentState)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return c, fmt.Errorf("read agent-dry config: %w", err)
+		return c, fmt.Errorf("read rice-agent config: %w", err)
 	}
 	if value := getenv("AGENT_STATE_ROOT"); value != "" {
 		c.Root = value

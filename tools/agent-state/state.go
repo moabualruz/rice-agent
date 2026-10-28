@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/fslock"
+	"github.com/moabualruz/rice-agent/internal/fslock"
 )
 
 const indexSchema = "agent-state/index-v1"

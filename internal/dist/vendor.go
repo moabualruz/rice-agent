@@ -15,15 +15,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
-const vendorUsage = `Usage: agent-dry vendor <tool> --into <repo> [--as <relpath>] [--dry-run]
-       agent-dry vendor --check <repo>
+const vendorUsage = `Usage: rice-agent vendor <tool> --into <repo> [--as <relpath>] [--dry-run]
+       rice-agent vendor --check <repo>
 
-Copy a tool's entry from the agent-dry root into a repository (default tools/<tool>/<entry>),
+Copy a tool's entry from the rice-agent root into a repository (default tools/<tool>/<entry>),
 preserving its mode, and record it in <repo>/.agent-dry/vendor.json and
 <repo>/.agent-dry/SHA256SUMS (accepted by sha256sum -c and shasum -a 256 -c from the repo root).
 Never stages or commits; prints the changed files relative to the repo.
@@ -40,7 +40,7 @@ Options:
 Exit codes: 0 vendored or clean, 1 drift, integrity failure or unknown tool, 2 usage,
 3 environment (no root, unreadable manifest or repository).
 
-Example: agent-dry vendor check-no-dashes --into . --as scripts/check-no-dashes.sh
+Example: rice-agent vendor check-no-dashes --into . --as scripts/check-no-dashes.sh
 `
 
 // Vendor manifest constants.
@@ -118,7 +118,7 @@ func runVendor(env *cli.Env) int {
 		return vendorCheck(env, repo)
 	}
 	if len(pos) != 1 || *into == "" {
-		return cli.Usagef(env, "vendor: need <tool> and --into <repo>; run agent-dry vendor --help")
+		return cli.Usagef(env, "vendor: need <tool> and --into <repo>; run rice-agent vendor --help")
 	}
 	repo, err := absPath(*into, home)
 	if err != nil {
@@ -206,7 +206,7 @@ func vendorCopy(env *cli.Env, name, repo, as string, dryRun bool) int {
 	}
 	dir := filepath.Join(root, "tools", name)
 	if _, err := os.Stat(filepath.Join(dir, manifest.FileName)); errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(env.Stderr, "agent-dry: vendor: no tool %q in %s\n", name, root)
+		fmt.Fprintf(env.Stderr, "rice-agent: vendor: no tool %q in %s\n", name, root)
 		return cli.ExitNegative
 	}
 	t, err := manifest.Load(dir)
@@ -214,7 +214,7 @@ func vendorCopy(env *cli.Env, name, repo, as string, dryRun bool) int {
 		return cli.Envf(env, "vendor: %v", err)
 	}
 	if !t.Listed() {
-		fmt.Fprintf(env.Stderr, "agent-dry: vendor: %s is %s; vendor only trial or active tools\n", name, t.Status)
+		fmt.Fprintf(env.Stderr, "rice-agent: vendor: %s is %s; vendor only trial or active tools\n", name, t.Status)
 		return cli.ExitNegative
 	}
 	if info, err := os.Stat(repo); err != nil || !info.IsDir() {
@@ -230,7 +230,7 @@ func vendorCopy(env *cli.Env, name, repo, as string, dryRun bool) int {
 	}
 	dst := filepath.Join(repo, filepath.FromSlash(rel))
 	if err := noSymlinkBetween(repo, dst); err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: vendor: %v\n", err)
+		fmt.Fprintf(env.Stderr, "rice-agent: vendor: %v\n", err)
 		return cli.ExitNegative
 	}
 	src := t.EntryPath()
@@ -293,7 +293,7 @@ func vendorCopy(env *cli.Env, name, repo, as string, dryRun bool) int {
 		return cli.Envf(env, "vendor: %v", err)
 	}
 	if err := noSymlinkBetween(repo, dst); err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: vendor: %v\n", err)
+		fmt.Fprintf(env.Stderr, "rice-agent: vendor: %v\n", err)
 		return cli.ExitNegative
 	}
 	if err := writeFileAtomic(dst, data, mode); err != nil {
@@ -322,7 +322,7 @@ func vendorCopy(env *cli.Env, name, repo, as string, dryRun bool) int {
 
 var sumLine = regexp.MustCompile(`^([0-9a-f]{64}) [ *](.+)$`)
 
-// CheckVendored compares the copies recorded in repo/.agent-dry with their checksums and with the
+// CheckVendored compares the copies recorded in repo/.rice-agent with their checksums and with the
 // current tool content under root. The error is set only when nothing could be checked.
 func CheckVendored(root, repo string) (*VendorReport, error) {
 	m, err := readVendorManifest(repo)
@@ -375,7 +375,7 @@ func CheckVendored(root, repo string) (*VendorReport, error) {
 		}
 		t, err := manifest.Load(filepath.Join(root, "tools", f.Tool))
 		if err != nil || !toolName.MatchString(f.Tool) {
-			fail(f.Path, f.Tool, "outdated", "tool is not in the agent-dry root")
+			fail(f.Path, f.Tool, "outdated", "tool is not in the rice-agent root")
 			continue
 		}
 		current, err := sha256File(t.EntryPath())
@@ -385,7 +385,7 @@ func CheckVendored(root, repo string) (*VendorReport, error) {
 		}
 		if current != actual {
 			rep.Findings = append(rep.Findings, VendorFinding{Path: f.Path, Tool: f.Tool, Status: "outdated",
-				Detail: "differs from the tool in the agent-dry root", Want: actual, Current: current})
+				Detail: "differs from the tool in the rice-agent root", Want: actual, Current: current})
 			continue
 		}
 		rep.Findings = append(rep.Findings, VendorFinding{Path: f.Path, Tool: f.Tool, Status: "ok", Want: actual, Current: current})
@@ -410,11 +410,11 @@ func vendorCheck(env *cli.Env, repo string) int {
 	}
 	rep, err := CheckVendored(root, repo)
 	if errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(env.Stderr, "agent-dry: vendor: %s has no %s/%s\n", repo, VendorDir, VendorJSON)
+		fmt.Fprintf(env.Stderr, "rice-agent: vendor: %s has no %s/%s\n", repo, VendorDir, VendorJSON)
 		return cli.ExitNegative
 	}
 	if err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: vendor: %v\n", err)
+		fmt.Fprintf(env.Stderr, "rice-agent: vendor: %v\n", err)
 		return cli.ExitNegative
 	}
 	problems := 0

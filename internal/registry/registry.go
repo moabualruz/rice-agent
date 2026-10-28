@@ -7,7 +7,7 @@
 //	(*Index).Search(query, limit) []Result
 //	Threshold
 //
-// Sources: agent-dry tools (listed statuses) and skills, the current project's commands (just
+// Sources: rice-agent tools (listed statuses) and skills, the current project's commands (just
 // recipes, package.json scripts, Makefile targets, executable scripts/*, .agent-dry.json), installed
 // skills (~/.agents/skills, ~/.claude/skills, project .agents/skills and .claude/skills), external
 // providers (registry/providers.json: mature CLIs from upstream or other owner projects, listed as
@@ -23,8 +23,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
 // Result is one ranked lookup hit.
@@ -143,7 +143,7 @@ const (
 	summaryRune = 90
 )
 
-// Load reads every source: cached agent-dry and installed sources from StateDir/index.json when
+// Load reads every source: cached rice-agent and installed sources from StateDir/index.json when
 // fresh, project commands live. The error is non-nil only for an unreadable root or index.
 func Load(getenv func(string) string, opts Options) (*Index, error) {
 	return load(getenv, opts, false)

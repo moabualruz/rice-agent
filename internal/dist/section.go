@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
-const sectionUsage = `Usage: agent-dry section install --name <NAME> --source <file> [--destination <home>] [--project-root <dir>]... [--dry-run]
-       agent-dry section check --name <NAME> --source <file> [--destination <home>] [--json]
+const sectionUsage = `Usage: rice-agent section install --name <NAME> --source <file> [--destination <home>] [--project-root <dir>]... [--dry-run]
+       rice-agent section check --name <NAME> --source <file> [--destination <home>] [--json]
 
 install writes the managed block <!-- NAME_START --> ... <!-- NAME_END --> from the source into
 every harness instruction file under the destination home, preserving all other content:
@@ -32,10 +32,9 @@ every harness instruction file under the destination home, preserving all other 
   and with --project-root, the Cursor project rule <root>/.cursor/rules/<name>.mdc.
 Symlinks are resolved so each real file is written once and links survive. An existing block is
 replaced in place; a missing block is inserted at the top, after any YAML front matter. A file
-holding the line
-  <!-- agent-dry: managed sections load from shared/KERNEL.md -->
-is an import wrapper or loader that gets every section through the kernel: install removes the
-block from it and never inserts one. Every file is checked before any is written: unequal or
+holding the Rice Agent or legacy agent-dry wrapper line is an import wrapper or loader that gets every
+section through the kernel: install removes the block from it and never inserts one. Every file is
+checked before any is written: unequal or
 duplicate markers, or a path escaping the destination, refuse the whole run. Writes are atomic,
 preserve mode and are read back. A JSON receipt with the source sha256 and every file's action
 (inserted, updated, removed, unchanged or deferred) and sha256 goes to stdout.
@@ -55,7 +54,7 @@ Options:
 Exit codes: 0 installed or parity holds, 1 refused or parity failed, 2 usage or invalid source,
 3 environment (unreadable source or destination, write or verification failure).
 
-Example: agent-dry section install --name DRY_POLICY --source policy/dry-policy.md --dry-run
+Example: rice-agent section install --name DRY_POLICY --source policy/dry-policy.md --dry-run
 `
 
 // alwaysTargets are created when absent; existingTargets are written only when present.
@@ -67,12 +66,16 @@ var (
 
 // deferLine marks a file that loads every managed section from shared/KERNEL.md (an import
 // wrapper or a loader such as the Codex home override), so it must not carry a copy.
-const deferLine = "<!-- agent-dry: managed sections load from shared/KERNEL.md -->"
+const (
+	deferLine       = "<!-- rice-agent: managed sections load from shared/KERNEL.md -->"
+	legacyDeferLine = "<!-- agent-dry: managed sections load from shared/KERNEL.md -->"
+)
 
-// defers reports whether content holds deferLine as a whole line.
+// defers reports whether content holds a wrapper marker as a whole line.
 func defers(content string) bool {
 	for _, line := range lineBreak.Split(content, -1) {
-		if strings.TrimSpace(line) == deferLine {
+		line = strings.TrimSpace(line)
+		if line == deferLine || line == legacyDeferLine {
 			return true
 		}
 	}
@@ -141,7 +144,7 @@ type sectionReceipt struct {
 
 func runSection(env *cli.Env) int {
 	if len(env.Args) == 0 {
-		return cli.Usagef(env, "section: need install or check; run agent-dry section --help")
+		return cli.Usagef(env, "section: need install or check; run rice-agent section --help")
 	}
 	sub := env.Args[0]
 	switch sub {
@@ -150,7 +153,7 @@ func runSection(env *cli.Env) int {
 		return cli.ExitOK
 	case "install", "check":
 	default:
-		return cli.Usagef(env, "section: unknown subcommand %q; run agent-dry section --help", sub)
+		return cli.Usagef(env, "section: unknown subcommand %q; run rice-agent section --help", sub)
 	}
 	fs := flag.NewFlagSet("section", flag.ContinueOnError)
 	name := fs.String("name", "", "")
@@ -229,7 +232,7 @@ func loadSection(env *cli.Env, name, srcPath string, forInstall bool) (*section,
 		return nil, cli.Usagef(env, "section: source %s must start with %s and end with %s, once each", srcPath, s.start, s.end)
 	}
 	if forInstall && hasDash(s.source) {
-		fmt.Fprintf(env.Stderr, "agent-dry: section: source %s contains an em or en dash; nothing changed\n", srcPath)
+		fmt.Fprintf(env.Stderr, "rice-agent: section: source %s contains an em or en dash; nothing changed\n", srcPath)
 		return nil, cli.ExitNegative
 	}
 	return s, cli.ExitOK
@@ -496,14 +499,14 @@ func planSection(s *section, t *sectionTarget) (*plannedWrite, error) {
 func sectionInstall(env *cli.Env, s *section, home string, projects []string, ruleName string, dryRun bool) int {
 	targets, entries, err := discoverTargets(home, true)
 	if err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: section: %v; nothing changed\n", err)
+		fmt.Fprintf(env.Stderr, "rice-agent: section: %v; nothing changed\n", err)
 		return cli.ExitNegative
 	}
 	var rules []projectRuleReceipt
 	for _, requested := range projects {
 		t, err := preflightProject(env, requested, ruleName, s.start)
 		if err != nil {
-			fmt.Fprintf(env.Stderr, "agent-dry: section: %v; nothing changed\n", err)
+			fmt.Fprintf(env.Stderr, "rice-agent: section: %v; nothing changed\n", err)
 			return cli.ExitNegative
 		}
 		dup := false
@@ -519,7 +522,7 @@ func sectionInstall(env *cli.Env, s *section, home string, projects []string, ru
 	for _, t := range targets {
 		p, err := planSection(s, t)
 		if err != nil {
-			fmt.Fprintf(env.Stderr, "agent-dry: section: %v; nothing changed\n", err)
+			fmt.Fprintf(env.Stderr, "rice-agent: section: %v; nothing changed\n", err)
 			return cli.ExitNegative
 		}
 		plans = append(plans, p)
@@ -537,7 +540,7 @@ func sectionInstall(env *cli.Env, s *section, home string, projects []string, ru
 				raw, err := os.ReadFile(p.t.path)
 				now := string(raw)
 				if (err == nil) != p.t.exists || (err == nil && now != p.before) {
-					fmt.Fprintf(env.Stderr, "agent-dry: section: project policy changed after preflight: %s\n", p.t.path)
+					fmt.Fprintf(env.Stderr, "rice-agent: section: project policy changed after preflight: %s\n", p.t.path)
 					return cli.ExitNegative
 				}
 			}
@@ -586,13 +589,13 @@ type sectionCheckReport struct {
 func sectionCheck(env *cli.Env, s *section, home string, asJSON bool) int {
 	targets, _, err := discoverTargets(home, false)
 	if err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: section: %v\n", err)
+		fmt.Fprintf(env.Stderr, "rice-agent: section: %v\n", err)
 		return cli.ExitNegative
 	}
 	rep := sectionCheckReport{Name: s.name, SourceSHA256: sha256Bytes([]byte(s.source)), Destination: home, Pass: true}
 	if hasDash(s.source) {
 		rep.Pass = false
-		fmt.Fprintf(env.Stderr, "agent-dry: section: source %s contains an em or en dash\n", s.sourcePath)
+		fmt.Fprintf(env.Stderr, "rice-agent: section: source %s contains an em or en dash\n", s.sourcePath)
 	}
 	for _, t := range targets {
 		c := SectionCheck{Path: t.path, Entries: t.entries}

@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/fslock"
+	"github.com/moabualruz/rice-agent/internal/fslock"
 )
 
 // Hold the same locks through validation, commit and rollback. Otherwise a failed

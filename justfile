@@ -9,7 +9,10 @@ secrets:
 
 # Every Go invocation unsets GOFLAGS so a caller's setting cannot change the build.
 build:
-    env -u GOFLAGS go build -o bin/agent-dry -ldflags "-X github.com/moabualruz/agent-dry/internal/commands.Version=$(git describe --tags --always --dirty)" ./cmd/agent-dry
+    env -u GOFLAGS go build -o bin/rice-agent -ldflags "-X github.com/moabualruz/rice-agent/internal/commands.Version=$(git describe --tags --always --dirty)" ./cmd/rice-agent
+    env -u GOFLAGS go build -o bin/agent-dry -ldflags "-X github.com/moabualruz/rice-agent/internal/commands.Version=$(git describe --tags --always --dirty)" ./cmd/agent-dry
+    bin/rice-agent --help >/dev/null
+    bin/agent-dry --help >/dev/null
 
 vet:
     env -u GOFLAGS go vet ./...
@@ -28,7 +31,7 @@ deploy TAG *ARGS:
 
 # Admission gates G1 to G6 on every tool under tools/.
 tools: build
-    bin/agent-dry check --all
+    bin/rice-agent check --all
 
 # Everything CI runs.
 ci: worktree-doctor vet test build tools dashes secrets

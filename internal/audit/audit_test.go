@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/manifest"
 )
 
 var fixedNow = time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
@@ -514,7 +514,7 @@ func TestExitCodes(t *testing.T) {
 	f := setup(t, nil)
 	code, out, _ := f.run(t, "--help")
 	eq(t, "help exit", code, cli.ExitOK)
-	if !strings.HasPrefix(out, "Usage: agent-dry audit") {
+	if !strings.HasPrefix(out, "Usage: rice-agent audit") {
 		t.Errorf("help starts with %q", strings.SplitN(out, "\n", 2)[0])
 	}
 	for _, args := range [][]string{
@@ -558,7 +558,7 @@ func TestParseSince(t *testing.T) {
 
 func TestHermesExportIsParsedWithoutPrintingCommands(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hermes")
-	line := `{"id":"session-a","messages":[{"role":"assistant","timestamp":1792238400,"tool_calls":[{"id":"call-a","function":{"name":"terminal","arguments":"{\"command\":\"agent-dry find audit && agent-dry check-no-dashes\"}"}}]},{"role":"tool","tool_call_id":"call-a","content":"{\"output\":\"ok\",\"exit_code\":0}"}]}`
+	line := `{"id":"session-a","messages":[{"role":"assistant","timestamp":1792238400,"tool_calls":[{"id":"call-a","function":{"name":"terminal","arguments":"{\"command\":\"rice-agent find audit && rice-agent check-no-dashes\"}"}}]},{"role":"tool","tool_call_id":"call-a","content":"{\"output\":\"ok\",\"exit_code\":0}"}]}`
 	script := "#!/bin/sh\nprintf '%s\\n' '" + line + "'\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -589,7 +589,7 @@ func TestHermesExportIsParsedWithoutPrintingCommands(t *testing.T) {
 }
 
 func TestHermesUnknownToolResultFailsClosed(t *testing.T) {
-	line := []byte(`{"id":"session-a","messages":[{"role":"assistant","tool_calls":[{"id":"call-a","function":{"name":"terminal","arguments":"{\"command\":\"agent-dry check-no-dashes\"}"}}]},{"role":"tool","tool_call_id":"call-a","content":"unstructured result"}]}`)
+	line := []byte(`{"id":"session-a","messages":[{"role":"assistant","tool_calls":[{"id":"call-a","function":{"name":"terminal","arguments":"{\"command\":\"rice-agent check-no-dashes\"}"}}]},{"role":"tool","tool_call_id":"call-a","content":"unstructured result"}]}`)
 	_, events, results, ok := scanHermesLine(line, time.Time{})
 	if !ok || len(events) != 1 || len(results) != 1 || !results[0].isError {
 		t.Fatalf("Hermes parse = ok:%v events:%d results:%+v", ok, len(events), results)
@@ -778,7 +778,7 @@ func TestCommandUsageAcrossClaudeAndCodex(t *testing.T) {
 			t.Errorf("text report missing %q", want)
 		}
 	}
-	if strings.Contains(text, "agent-dry find codex") {
+	if strings.Contains(text, "rice-agent find codex") {
 		t.Error("text report leaked command text")
 	}
 }

@@ -1,28 +1,38 @@
-# agent-dry
+# Rice Agent
 
 Private. All rights reserved. This repository is not open source and carries no license grant.
+It evolves the existing `agent-dry` repository and preserves its Git history.
 
-Cross-project DRY tooling for coding agents (Claude Code, Codex, Gemini and Antigravity, opencode,
-Cursor, Hermes). Agents look up existing tools before acting, and when work is about to repeat they
-build a verified tool first and use it for the current task. Reuse is decided at the start of the
-work, not reconstructed afterwards.
+Cross-project tools for coding agents (Claude Code, Codex, Gemini and Antigravity, opencode,
+Cursor, Hermes). Rice Agent keeps the existing verified toolbelt and adds the canonical local
+instruction writer. Agents look up existing tools before acting, and when work is about to repeat
+they build a verified tool first and use it for the current task.
 
-The rule every agent follows is the `DRY_POLICY` section in the global instruction files; the detail
-is `agent-dry guide`, and the tool contract is `agent-dry guide tools`.
+Use `rice-agent guide` for the toolbelt details and `rice-agent guide tools` for the tool contract.
+The `agent-dry` executable is a temporary one-release alias to the same implementation.
 
 ## Use
 
 ```sh
-agent-dry find watch pr checks        # look up before acting
-agent-dry show pr-flow                # flags, side effects, test command
-agent-dry new <name> --kind script --scope global --task <ref> --summary "Use when ..." --intent "..."
-agent-dry check <name>                # admission gates G1 to G6
-agent-dry install                     # link agent-dry and global tools into ~/.local/bin
-agent-dry install --remote hetzner    # hosts without Go get a bundle over SSH
-just deploy v0.2.3 --dry-run          # release a tag here and to every hosts.<name>.install host
-agent-dry vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
-agent-dry audit --since 14d           # is DRY happening: lookups, reimplementations, copies
+rice-agent find watch pr checks        # look up before acting
+rice-agent show pr-flow                # flags, side effects, test command
+rice-agent new <name> --kind script --scope global --task <ref> --summary "Use when ..." --intent "..."
+rice-agent check <name>                # admission gates G1 to G6
+rice-agent install                     # link Rice Agent and global tools into ~/.local/bin
+rice-agent install --remote hetzner    # hosts without Go get a bundle over SSH
+rice-agent instruction render --source ~/.config/agent-instructions --output ./rendered-instructions
+just deploy v0.2.3 --dry-run           # release a tag here and to every hosts.<name>.install host
+rice-agent vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
+rice-agent audit --since 14d            # is reuse happening: lookups, reimplementations, copies
 ```
+
+Rendering writes only a new output directory. It does not edit instruction sources, install links,
+or alter harness configuration. Compare its `compiled/` tree with the current outputs before any
+separate cutover.
+
+The `agent-dry` alias remains only for the bounded migration release. It delegates to the same Rice
+Agent command implementation and is removed after known callers and approved-host cutovers are
+verified. The GitHub repository rename is a coordinator step after this local migration is verified.
 
 ## Tools
 
@@ -35,24 +45,25 @@ agent-dry audit --since 14d           # is DRY happening: lookups, reimplementat
 | `repo-state` | one compact snapshot of a repository's branch, HEAD and dirty state |
 | `bao-run` | running a command with an OpenBao token that never reaches argv or output |
 
-`agent-dry find` is the source of truth; this table is a convenience.
+`rice-agent find` is the source of truth; this table is a convenience.
 
 ## Planning
 
-Rice Observe effort `agent-dry-v1` in `rice-kb`: spec `rice-kb:docs/specs/agent-dry.md`, decision
-`rice-kb:docs/adr/agent-dry-proactive-tool-first-20261017.md`, map and tickets under
-`rice-kb:.scratch/agent-dry-v1/`, research `rice-kb:docs/research/agent-dry-*-20261017.md`. Read one
-with `rice-client document read --id <reference>`.
+Rice Observe effort `rice-agent-v1` in `rice-kb`: [design](rice-kb:docs/research/agent-projects-into-rice-20261028.md),
+tickets under `rice-kb:.scratch/rice-agent-v1/issues/`. Historical implementation work remains in
+`rice-kb:.scratch/agent-dry-v1/` and its accepted spec `rice-kb:docs/specs/agent-dry.md`.
 
 ## Layout
 
 | Path | Content |
 | --- | --- |
-| `cmd/agent-dry`, `internal/` | the CLI: `registry` (find, show, index, guide), `gates` (new, check), `dist` (install, doctor, vendor, bundle, section), `audit` |
+| `cmd/rice-agent` | canonical Rice Agent CLI |
+| `cmd/agent-dry` | temporary one-release CLI alias |
+| `internal/` | registry, admission, distribution, instruction rendering and audit |
 | `schemas/tool/v1` | tool manifest JSON Schema |
 | `tools/<name>/` | tools: `tool.json`, entry, `test.sh` |
 | `registry/wanted.json` | recurring work with evidence and no tool yet |
-| `policy/dry-policy.md` | `DRY_POLICY` managed section source for the global instructions |
+| `policy/dry-policy.md` | current `DRY_POLICY` section source during migration |
 | `docs/` | the guide and tool contract embedded in the binary |
 | `testdata/` | fixtures per package |
 

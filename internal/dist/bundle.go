@@ -16,29 +16,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/commands"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/commands"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
-const bundleUsage = `Usage: agent-dry bundle [--goos linux] [--goarch amd64] [--out <file>]
+const bundleUsage = `Usage: rice-agent bundle [--goos linux] [--goarch amd64] [--out <file>]
 
-Cross-compile cmd/agent-dry with CGO_ENABLED=0 and the version ldflag (git describe of the root),
-then pack bin/agent-dry, tools/, skills/ (if present), registry/, policy/, docs/, schemas/ and a
-VERSION file into a tar.gz. Prints the path, sha256, size and version as JSON.
+Cross-compile cmd/rice-agent with CGO_ENABLED=0 and the version ldflag (git describe of the root),
+then pack bin/rice-agent, tools/, skills/ (if present), registry/, policy/, docs/, schemas/ and a
+VERSION file into a tar.gz. The installer also exposes agent-dry as a one-release alias. Prints the path, sha256, size and version as JSON.
 
 Options:
   --goos <os>      target operating system (default linux)
   --goarch <arch>  target architecture (default amd64)
-  --out <file>     output file (default <root>/dist/agent-dry-<version>-<goos>-<goarch>.tar.gz)
+  --out <file>     output file (default <root>/dist/rice-agent-<version>-<goos>-<goarch>.tar.gz)
 
 Exit codes: 0 bundle written, 1 build failed, 2 usage, 3 environment (no source root, no go).
 
-Example: agent-dry bundle --goos linux --goarch amd64 --out /tmp/agent-dry.tar.gz
+Example: rice-agent bundle --goos linux --goarch amd64 --out ./rice-agent.tar.gz
 `
 
 // VersionLDFlag is the linker flag prefix that stamps the build version.
-const VersionLDFlag = "-X github.com/moabualruz/agent-dry/internal/commands.Version="
+const VersionLDFlag = "-X github.com/moabualruz/rice-agent/internal/commands.Version="
 
 // Bundle describes a written release tarball.
 type Bundle struct {
@@ -160,7 +160,7 @@ func goBuildEnv(goos, goarch string) []string {
 
 // buildBundle compiles and packs a bundle. It returns nil and an exit code on failure.
 func buildBundle(env *cli.Env, root, goos, goarch, out string) (*Bundle, int) {
-	for _, need := range []string{"go.mod", filepath.Join("cmd", "agent-dry")} {
+	for _, need := range []string{"go.mod", filepath.Join("cmd", "rice-agent")} {
 		if _, err := os.Stat(filepath.Join(root, need)); err != nil {
 			return nil, cli.Envf(env, "bundle: %s is not a source checkout (missing %s)", root, need)
 		}
@@ -175,24 +175,24 @@ func buildBundle(env *cli.Env, root, goos, goarch, out string) (*Bundle, int) {
 	v, _ := rootVersion(root, env.Getenv("PATH"))
 	version := sanitizeVersion(v)
 	if out == "" {
-		out = filepath.Join(root, "dist", fmt.Sprintf("agent-dry-%s-%s-%s.tar.gz", version, goos, goarch))
+		out = filepath.Join(root, "dist", fmt.Sprintf("rice-agent-%s-%s-%s.tar.gz", version, goos, goarch))
 	}
-	work, err := os.MkdirTemp("", "agent-dry-bundle-")
+	work, err := os.MkdirTemp("", "rice-agent-bundle-")
 	if err != nil {
 		return nil, cli.Envf(env, "bundle: %v", err)
 	}
 	defer os.RemoveAll(work)
-	bin := filepath.Join(work, "agent-dry")
-	cmd := exec.Command(goBin, "build", "-trimpath", "-ldflags", "-s -w "+VersionLDFlag+version, "-o", bin, "./cmd/agent-dry")
+	bin := filepath.Join(work, "rice-agent")
+	cmd := exec.Command(goBin, "build", "-trimpath", "-ldflags", "-s -w "+VersionLDFlag+version, "-o", bin, "./cmd/rice-agent")
 	cmd.Dir = root
 	cmd.Env = goBuildEnv(goos, goarch)
 	if outb, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: bundle: go build for %s-%s failed: %v\n%s", goos, goarch, err, tailLines(string(outb), 40))
+		fmt.Fprintf(env.Stderr, "rice-agent: bundle: go build for %s-%s failed: %v\n%s", goos, goarch, err, tailLines(string(outb), 40))
 		return nil, cli.ExitNegative
 	}
 	goTools, err := buildGoTools(root, filepath.Join(work, "tool-binaries"), goos, goarch, env.Getenv("PATH"))
 	if err != nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: bundle: %v\n", err)
+		fmt.Fprintf(env.Stderr, "rice-agent: bundle: %v\n", err)
 		return nil, cli.ExitNegative
 	}
 	defer discardGoTools(goTools)
@@ -262,7 +262,7 @@ func writeTarball(w io.Writer, root, bin, version string, goTools []goToolBinary
 	if err != nil {
 		return err
 	}
-	if err := file("bin/agent-dry", 0o755, exe); err != nil {
+	if err := file("bin/rice-agent", 0o755, exe); err != nil {
 		return err
 	}
 	for _, d := range bundleDirs {

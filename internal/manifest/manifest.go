@@ -13,13 +13,13 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/moabualruz/agent-dry/schemas"
+	"github.com/moabualruz/rice-agent/schemas"
 )
 
 // FileName is the manifest file inside each tool directory.
 const FileName = "tool.json"
 
-// Tool is a tool/v1 manifest. Field meanings are in the agent-dry spec, section 6.2.
+// Tool is a tool/v1 manifest. Field meanings are in the rice-agent spec, section 6.2.
 type Tool struct {
 	Schema       string            `json:"schema"`
 	Name         string            `json:"name"`

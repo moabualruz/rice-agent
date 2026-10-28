@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-no-dashes: reject em dash (U+2014) and en dash (U+2013).
 #
-# Canonical home: agent-dry tools/check-no-dashes. Repositories vendor this file unchanged as
+# Canonical home: rice-agent tools/check-no-dashes. Repositories vendor this file unchanged as
 # scripts/check-no-dashes.sh; nothing here depends on the file name or location.
 #
 # Union of the earlier variants: staged added lines by default (pre-commit), added lines in a

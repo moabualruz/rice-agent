@@ -19,10 +19,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
-	"github.com/moabualruz/agent-dry/internal/registry"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
 //go:embed templates/*.tmpl
@@ -50,10 +50,10 @@ type projectEntry struct {
 	Kind    string   `json:"kind,omitempty"`
 }
 
-const newUsage = `Usage: agent-dry new <name> --kind script|cli|skill --scope global|project --task <ref> [flags]
+const newUsage = `Usage: rice-agent new <name> --kind script|cli|skill --scope global|project --task <ref> [flags]
 
 Run the duplicate check (gate G2, against this repository's own tools and skills), then the reuse
-advisory, then scaffold a tool that already passes its tests and agent-dry check. The advisory
+advisory, then scaffold a tool that already passes its tests and rice-agent check. The advisory
 prints on stderr, under "consider reusing before building:", up to 3 installed skills, project
 commands and external CLIs that may already cover the job; it never blocks or changes the exit
 code, and it says nothing when none match or the full registry does not load. Global tools go to
@@ -80,10 +80,10 @@ Flags:
 Environment: AGENT_DRY_BUILDER names the builder model recorded in origin (default "unknown").
 
 Exit codes: 0 created or planned, 1 refused (duplicate, PATH collision or existing file),
-2 usage error, 3 environment (no agent-dry root, no Git repository, unreadable registry).
+2 usage error, 3 environment (no rice-agent root, no Git repository, unreadable registry).
 
 Example:
-  agent-dry new repo-state --kind script --scope global --task rice-kb:issues/11 \
+  rice-agent new repo-state --kind script --scope global --task rice-kb:issues/11 \
     --summary "Use when you need branch, HEAD and dirty state in one block." \
     --intent "git status summary" --intent "repo state" --intent "count dirty files"
 `
@@ -138,7 +138,7 @@ func runNew(env *cli.Env) int {
 	}
 	all := duplicates(ix, query, "", nil, false)
 	if hits := duplicates(ix, query, "", covered, false); len(hits) > 0 {
-		fmt.Fprintf(env.Stderr, "agent-dry: G2 duplicate: %d existing entries match %q; reuse or extend one, or pass --extends <tool> or --distinct-from <tool> --reason <text>\n", len(hits), o.name)
+		fmt.Fprintf(env.Stderr, "rice-agent: G2 duplicate: %d existing entries match %q; reuse or extend one, or pass --extends <tool> or --distinct-from <tool> --reason <text>\n", len(hits), o.name)
 		for _, h := range hits {
 			fmt.Fprintln(env.Stdout, "  "+registryResultLine(h))
 		}
@@ -168,7 +168,7 @@ func runNew(env *cli.Env) int {
 		}
 	}
 	if len(exists) > 0 {
-		fmt.Fprintf(env.Stderr, "agent-dry: refusing to overwrite: %s\n", strings.Join(exists, ", "))
+		fmt.Fprintf(env.Stderr, "rice-agent: refusing to overwrite: %s\n", strings.Join(exists, ", "))
 		return cli.ExitNegative
 	}
 
@@ -216,10 +216,10 @@ func parseNew(env *cli.Env) (*newOpts, int) {
 		return nil, cli.ExitOK
 	}
 	if err != nil {
-		return nil, cli.Usagef(env, "new: %v; run agent-dry new --help", err)
+		return nil, cli.Usagef(env, "new: %v; run rice-agent new --help", err)
 	}
 	if len(pos) != 1 {
-		return nil, cli.Usagef(env, "new: want exactly one <name>, got %d; run agent-dry new --help", len(pos))
+		return nil, cli.Usagef(env, "new: want exactly one <name>, got %d; run rice-agent new --help", len(pos))
 	}
 	o.name = pos[0]
 	if !namePattern.MatchString(o.name) || len(o.name) > 40 {
@@ -346,12 +346,12 @@ func planNew(env *cli.Env, o *newOpts) (*newPlan, int) {
 		}
 		toolsDir := filepath.Join(root, "tools")
 		if hit := pathCollision(o.name, toolsDir); hit != "" {
-			fmt.Fprintf(env.Stderr, "agent-dry: G1 manifest: %q already resolves on PATH to %s; choose another name\n", o.name, hit)
+			fmt.Fprintf(env.Stderr, "rice-agent: G1 manifest: %q already resolves on PATH to %s; choose another name\n", o.name, hit)
 			return nil, cli.ExitNegative
 		}
 		dir := filepath.Join(toolsDir, o.name)
 		if _, err := os.Lstat(dir); err == nil {
-			fmt.Fprintf(env.Stderr, "agent-dry: refusing to overwrite: %s exists; extend that tool instead\n", dir)
+			fmt.Fprintf(env.Stderr, "rice-agent: refusing to overwrite: %s exists; extend that tool instead\n", dir)
 			return nil, cli.ExitNegative
 		}
 		t := toolManifest(o, d)
@@ -363,7 +363,7 @@ func planNew(env *cli.Env, o *newOpts) (*newPlan, int) {
 			}
 		} else {
 			if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-				return nil, cli.Envf(env, "%s has no go.mod; Go tools are built inside the agent-dry module (a clone, not a bundle)", root)
+				return nil, cli.Envf(env, "%s has no go.mod; Go tools are built inside the rice-agent module (a clone, not a bundle)", root)
 			}
 			d.GoUsage = strconv.Quote(string(render("usage", d)))
 			p.files = []planFile{
@@ -381,7 +381,7 @@ func planNew(env *cli.Env, o *newOpts) (*newPlan, int) {
 			return nil, cli.Usagef(env, "new: generated manifest is invalid: %v", err)
 		}
 		p.files = append([]planFile{{path: filepath.Join(dir, manifest.FileName), mode: 0o644, data: raw}}, p.files...)
-		p.next = "implement the placeholder action and its tests, refine summary and intents in tool.json, then run: agent-dry check " + o.name
+		p.next = "implement the placeholder action and its tests, refine summary and intents in tool.json, then run: rice-agent check " + o.name
 		return p, -1
 	}
 
@@ -417,7 +417,7 @@ func planNew(env *cli.Env, o *newOpts) (*newPlan, int) {
 	p.listPath = filepath.Join(gitRoot, ProjectList)
 	data, err := mergeProjectList(p.listPath, projectEntry{Name: o.name, Summary: o.summary, Intents: o.intents, Entry: entry, Kind: o.kind})
 	if errors.Is(err, errListed) {
-		fmt.Fprintf(env.Stderr, "agent-dry: refusing to overwrite: %q is already listed in %s\n", o.name, p.listPath)
+		fmt.Fprintf(env.Stderr, "rice-agent: refusing to overwrite: %q is already listed in %s\n", o.name, p.listPath)
 		return nil, cli.ExitNegative
 	}
 	if err != nil {
@@ -465,7 +465,7 @@ func toolManifest(o *newOpts, d tmplData) *manifest.Tool {
 func render(name string, d tmplData) []byte {
 	var b bytes.Buffer
 	if err := templates.ExecuteTemplate(&b, name, d); err != nil {
-		panic("agent-dry: template " + name + ": " + err.Error()) // embedded templates are tested
+		panic("rice-agent: template " + name + ": " + err.Error()) // embedded templates are tested
 	}
 	return b.Bytes()
 }
@@ -587,7 +587,7 @@ func mkdirTracked(dir string) ([]string, error) {
 }
 
 // pathCollision returns where name resolves on PATH when that is not this tool: neither inside
-// toolsDir, nor a symlink into it, nor the same tool inside another agent-dry root (an installed
+// toolsDir, nor a symlink into it, nor the same tool inside another rice-agent root (an installed
 // bundle). It returns "" when name does not resolve.
 func pathCollision(name, toolsDir string) string {
 	found, err := exec.LookPath(name)
@@ -636,7 +636,7 @@ var loadAdvisory = func(getenv func(string) string) (searcher, error) {
 // advisoryLimit caps the reuse advisory lines.
 const advisoryLimit = 3
 
-// adviseReuse prints on stderr the capabilities agent-dry does not own that may already cover the
+// adviseReuse prints on stderr the capabilities rice-agent does not own that may already cover the
 // job, so scripted callers parsing stdout see nothing new. It is advisory only: it never blocks or
 // changes the exit code, and it prints nothing when the full registry does not load.
 func adviseReuse(env *cli.Env, query string) {
@@ -655,7 +655,7 @@ func adviseReuse(env *cli.Env, query string) {
 }
 
 // reuseCandidates returns, best first, at most advisoryLimit hits at or above the threshold from
-// sources agent-dry does not own: external providers, installed skills and project commands.
+// sources rice-agent does not own: external providers, installed skills and project commands.
 func reuseCandidates(ix searcher, query string) []registry.Result {
 	var out []registry.Result
 	for _, h := range ix.Search(query, 0) {

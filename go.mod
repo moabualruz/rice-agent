@@ -1,4 +1,4 @@
-module github.com/moabualruz/agent-dry
+module github.com/moabualruz/rice-agent
 
 go 1.27.1
 

@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
 // Gate time limits; tests shorten them.
@@ -28,9 +28,9 @@ var (
 	staticTimeout = 120 * time.Second
 )
 
-const checkUsage = `Usage: agent-dry check [<tool>...|--all] [--skip-unavailable]
+const checkUsage = `Usage: rice-agent check [<tool>...|--all] [--skip-unavailable]
 
-Run the admission gates on agent-dry tools, cheapest first. A failed gate stops that tool's
+Run the admission gates on rice-agent tools, cheapest first. A failed gate stops that tool's
 later gates, which are reported as SKIPPED.
   G1 manifest    tool/v1 schema, name matches its directory, no collision on PATH
   G2 duplicate   search of agent-dry's own tools and skills over name, summary and intents;
@@ -50,10 +50,10 @@ Flags:
                        the run still exits 1, so a skipped gate never counts as proof
 
 Exit codes: 0 every gate passed, 1 a gate failed or was skipped, 2 usage error,
-3 environment (no agent-dry root, missing checker, unreadable registry).
+3 environment (no rice-agent root, missing checker, unreadable registry).
 
 Example:
-  agent-dry check --all
+  rice-agent check --all
 `
 
 type gateStatus string
@@ -136,10 +136,10 @@ func runCheck(env *cli.Env) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return cli.Usagef(env, "check: %v; run agent-dry check --help", err)
+		return cli.Usagef(env, "check: %v; run rice-agent check --help", err)
 	}
 	if all == (len(args) > 0) {
-		return cli.Usagef(env, "check: name tools or pass --all, not both or neither; run agent-dry check --help")
+		return cli.Usagef(env, "check: name tools or pass --all, not both or neither; run rice-agent check --help")
 	}
 	root, err := paths.Root(env.Getenv)
 	if err != nil {

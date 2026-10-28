@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
 // Semantic tests never reach the real zvec-grep: PATH holds only the stub zg (testdata/registry/
@@ -75,7 +75,7 @@ func TestCorpus(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "tool", "host-run.md"))
 	card := string(raw)
-	for _, w := range []string{"# host-run\n\n", "\nkind: script global (agent-dry tool)\n", "\nentry: host-run (tools/host-run/host-run)\n",
+	for _, w := range []string{"# host-run\n\n", "\nkind: script global (rice-agent tool)\n", "\nentry: host-run (tools/host-run/host-run)\n",
 		"\nsummary: Use when ", "\nintents: ssh to mkh-pc; "} {
 		if !strings.Contains(card, w) {
 			t.Errorf("host-run card lacks %q:\n%s", w, card)
@@ -289,7 +289,7 @@ func TestFindSemantic(t *testing.T) {
 		t.Errorf("lexical hit called zg: exit %d calls %v", code, calls()[before:])
 	}
 	_, _, errOut = run(t, getenv, "find", "--debug", "--project", p, "watch pr checks")
-	if errOut != "agent-dry: debug: semantic recall skipped: lexical match\n" {
+	if errOut != "rice-agent: debug: semantic recall skipped: lexical match\n" {
 		t.Errorf("debug on hit %q", errOut)
 	}
 }
@@ -337,7 +337,7 @@ func TestFindSemanticFallback(t *testing.T) {
 	}
 	before := len(calls())
 	code, out, errOut := run(t, noZg, "find", "--debug", "--project", p, "summarize this quarterly sales spreadsheet")
-	if code != cli.ExitNegative || out != "" || errOut != "agent-dry: debug: semantic recall off: zg not on PATH\n" || len(calls()) != before {
+	if code != cli.ExitNegative || out != "" || errOut != "rice-agent: debug: semantic recall off: zg not on PATH\n" || len(calls()) != before {
 		t.Errorf("no zg: exit %d out %q err %q", code, out, errOut)
 	}
 	if m := lastMiss(t, noZg); m.Semantic {
@@ -347,7 +347,7 @@ func TestFindSemanticFallback(t *testing.T) {
 	// zg present but no corpus index: never called, never creates one.
 	fresh, freshCalls := semanticEnv(t, nil)
 	code, _, errOut = run(t, fresh, "find", "--debug", "--project", p, "bake sourdough bread loaf")
-	if code != cli.ExitNegative || !strings.Contains(errOut, "no corpus index; run agent-dry index --semantic") || len(freshCalls()) != 0 {
+	if code != cli.ExitNegative || !strings.Contains(errOut, "no corpus index; run rice-agent index --semantic") || len(freshCalls()) != 0 {
 		t.Errorf("no index: exit %d err %q calls %v", code, errOut, freshCalls())
 	}
 	if semanticIndexed(corpusOf(fresh)) {
@@ -404,7 +404,7 @@ func TestIndexSemantic(t *testing.T) {
 		t.Error("marker kept after a refresh")
 	}
 
-	// A failed automatic refresh is recorded and not retried by find; agent-dry index retries.
+	// A failed automatic refresh is recorded and not retried by find; rice-agent index retries.
 	t.Setenv("ZG_STUB_INDEX", "fail")
 	edit(`"offline usage json"`, `"monthly spend digest"`)
 	n = len(calls())
@@ -481,7 +481,7 @@ func TestSemanticChecks(t *testing.T) {
 		detail string
 	}{
 		{func() {}, "WARN", "no corpus at "},
-		{func() { loadFixture(t, getenv) }, "WARN", "9 cards at " + dir + ", not indexed; run agent-dry index --semantic"},
+		{func() { loadFixture(t, getenv) }, "WARN", "9 cards at " + dir + ", not indexed; run rice-agent index --semantic"},
 		{func() { os.Mkdir(filepath.Join(dir, zvecIndexDir), 0o700) }, "PASS", "9 cards at " + dir + " indexed"},
 		{func() { markPending(dir, "") }, "WARN", "refresh pending"},
 		{func() { markPending(dir, "failed 2026-10-17T00:00:00Z: zg index timed out after 10s") }, "WARN", "last refresh failed 2026-10-17T00:00:00Z"},

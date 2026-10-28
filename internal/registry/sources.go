@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/manifest"
 )
 
 // WantedSchema is the schema value registry/wanted.json must carry.
@@ -127,7 +127,7 @@ func writeCache(dir, path string, c *cacheFile) error {
 	return nil
 }
 
-// buildCache reads the agent-dry tools, agent-dry skills, installed skills under home, the
+// buildCache reads the rice-agent tools, rice-agent skills, installed skills under home, the
 // external providers and the wanted families. Paths are stamped before they are read so a
 // concurrent edit invalidates; a missing providers.json is stamped too, so creating it does.
 func buildCache(root, home string) (*cacheFile, error) {

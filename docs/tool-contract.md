@@ -1,6 +1,6 @@
 # Tool contract
 
-Every agent-dry tool follows this contract. `agent-dry check` enforces it (gates G1 to G6).
+Every rice-agent tool follows this contract. `rice-agent check` enforces it (gates G1 to G6).
 
 ## Layout
 
@@ -17,13 +17,13 @@ tools/<name>/
 - `name` equals the directory name; kebab-case; must not collide with an existing command on PATH.
 - `summary` starts with "Use when", at most 80 characters, trigger first.
 - `intents`: 3 to 12 phrases an agent would type when it needs the tool ("watch pr checks",
-  "ssh to mkh-pc"). They drive `agent-dry find`.
+  "ssh to mkh-pc"). They drive `rice-agent find`.
 - `side_effects` is the strongest effect the tool can have. Anything above `read` requires `dry_run`
   (the flag that prints the plan and changes nothing).
 - `exit_codes` documents every code the tool returns.
 - `replaces`: Go RE2 regular expressions matching the hand-written Bash commands this tool
   supersedes (for example an inline `rg` for U+2014). The audit counts them.
-- `config`: dotted keys the tool reads from `~/.config/agent-dry/config.json`.
+- `config`: dotted keys the tool reads from `~/.config/rice-agent/config.json`.
 - `origin`: date, builder model and the motivating task; `promoted_from` when an existing script was promoted.
 - New tools start with `status: "trial"`.
 

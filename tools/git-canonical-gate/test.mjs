@@ -125,8 +125,8 @@ if (!native) {
     git(f.repo, 'config', '--local', '--unset', 'rice.canonicalGateRoot');
     assert.equal(run('/bin/bash', [entry], f.repo, isolated).status, 3);
     for (const name of ['tool.json', 'git-canonical-gate']) copyFileSync(join(here, name), join(tool, name));
-    const cli = join(registry, 'bin/agent-dry');
-    copyFileSync(join(here, '../../bin/agent-dry'), cli);
+    const cli = join(registry, 'bin/rice-agent');
+    copyFileSync(join(here, '../../bin/rice-agent'), cli);
     writeFileSync(isolated.AGENT_DRY_CONFIG, JSON.stringify({ root: registry }));
     const installed = run(cli, ['install'], f.repo, isolated);
     assert.equal(installed.status, 0, installed.stdout + installed.stderr);

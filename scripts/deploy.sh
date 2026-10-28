@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# deploy.sh: release a tag of agent-dry to this machine and every configured host, then verify.
+# deploy.sh: release a tag of rice-agent to this machine and every configured host, then verify.
 # Run `scripts/deploy.sh --help` for usage. Bash 3.2 compatible.
 set -euo pipefail
 
 PROG="deploy"
 GH_REPO="moabualruz/agent-dry"
-LDVAR="github.com/moabualruz/agent-dry/internal/commands.Version"
+LDVAR="github.com/moabualruz/rice-agent/internal/commands.Version"
 # shellcheck disable=SC2088 # a literal ~ for the remote host; the clone script expands it there
 DEFAULT_CLONE_ROOT='~/workspace/agent-dry'
 CLONE_TIMEOUT=1200
@@ -16,27 +16,27 @@ usage() {
 Usage: scripts/deploy.sh <tag> [--host <name>]... [--dry-run] [--skip-ci-check]
        just deploy <tag> [options]
 
-Release <tag> of agent-dry to this machine and to every host in the agent-dry config that sets
+Release <tag> of rice-agent to this machine and to every host in the rice-agent config that sets
 hosts.<name>.install, then verify each one.
 
   1. check   <tag> exists locally and on origin at the same commit, and the latest hosted CI run
              for that commit (pr-flow runs <sha> --repo moabualruz/agent-dry --limit 1 --json)
              concluded success
   2. build   git archive of the tag's commit into a temporary root (never the working tree), a
-             VERSION file, and env -u GOFLAGS CGO_ENABLED=0 go build -o <tmp>/bin/agent-dry with
+             VERSION file, and env -u GOFLAGS CGO_ENABLED=0 go build -o <tmp>/bin/rice-agent with
              the version ldflag
-  3. local   copy the binary to <repo>/bin/agent-dry and run agent-dry install (the root stays
+  3. local   copy the binary to <repo>/bin/rice-agent and run rice-agent install (the root stays
              this clone)
   4. remote  by hosts.<name>.install:
-               bundle  AGENT_DRY_ROOT=<tmp> <tmp>/bin/agent-dry install --remote <name>
+               bundle  AGENT_DRY_ROOT=<tmp> <tmp>/bin/rice-agent install --remote <name>
                        (for hosts without Go or GitHub access)
                clone   host-run <name> --script: in the clone at hosts.<name>.root (default
                        ~/workspace/agent-dry) refuse uncommitted changes, git fetch --tags,
                        fast-forward main to the tag's commit, or check the tag out detached
-                       when main cannot fast-forward (reported), build bin/agent-dry with the
-                       same ldflags and run bin/agent-dry install
+                       when main cannot fast-forward (reported), build bin/rice-agent with the
+                       same ldflags and run bin/rice-agent install
              hosts without install are skipped with a note
-  5. verify  on every host agent-dry version equals <tag> and agent-dry doctor ends healthy;
+  5. verify  on every host rice-agent version equals <tag> and rice-agent doctor ends healthy;
              one summary line per host. A failed host does not stop the others.
 
 Options:
@@ -179,13 +179,13 @@ clone_main() {
   fi
   printf 'deploy-clone: checkout: %s\n' "$how"
   mkdir -p bin
-  env -u GOFLAGS CGO_ENABLED=0 go build -o bin/agent-dry -ldflags "-X $ldvar=$tag" ./cmd/agent-dry ||
+  env -u GOFLAGS CGO_ENABLED=0 go build -o bin/rice-agent -ldflags "-X $ldvar=$tag" ./cmd/rice-agent ||
     clone_fail "go build failed in $dir" 1
-  got=$(bin/agent-dry version) || clone_fail "bin/agent-dry version failed in $dir" 1
-  [ "$got" = "$tag" ] || clone_fail "built bin/agent-dry reports $got, want $tag" 1
+  got=$(bin/rice-agent version) || clone_fail "bin/rice-agent version failed in $dir" 1
+  [ "$got" = "$tag" ] || clone_fail "built bin/rice-agent reports $got, want $tag" 1
   rc=0
-  AGENT_DRY_ROOT="$dir" bin/agent-dry install || rc=$?
-  [ "$rc" -eq 0 ] || clone_fail "bin/agent-dry install exited $rc in $dir" 1
+  AGENT_DRY_ROOT="$dir" bin/rice-agent install || rc=$?
+  [ "$rc" -eq 0 ] || clone_fail "bin/rice-agent install exited $rc in $dir" 1
 }
 
 # ---------- arguments ----------
@@ -252,7 +252,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 need git jq tar go
 [ "$skip_ci" -eq 1 ] || need pr-flow
 
-cfg=${AGENT_DRY_CONFIG:-$HOME/.config/agent-dry/config.json}
+cfg=${AGENT_DRY_CONFIG:-$HOME/.config/rice-agent/config.json}
 c_name=()
 c_mode=()
 c_root=()
@@ -386,14 +386,14 @@ trap 'exit 130' INT TERM HUP
 tmp_base=${TMPDIR:-/tmp}
 tmp_base=${tmp_base%/}
 if [ "$dry_run" -eq 1 ]; then
-  root="$tmp_base/agent-dry-deploy.XXXXXX/root"
+  root="$tmp_base/rice-agent-deploy.XXXXXX/root"
 else
-  work=$(mktemp -d "$tmp_base/agent-dry-deploy.XXXXXX") || die "cannot create a temporary directory" 3
+  work=$(mktemp -d "$tmp_base/rice-agent-deploy.XXXXXX") || die "cannot create a temporary directory" 3
   root="$work/root"
   mkdir -p "$root/bin"
 fi
 ldflags="-X $LDVAR=$tag"
-build_cmd=(env -u GOFLAGS CGO_ENABLED=0 go build -o "$root/bin/agent-dry" -ldflags "$ldflags" ./cmd/agent-dry)
+build_cmd=(env -u GOFLAGS CGO_ENABLED=0 go build -o "$root/bin/rice-agent" -ldflags "$ldflags" ./cmd/rice-agent)
 
 say "build: $tag ($short) from a clean export in $root"
 printf '  + %s | %s\n' "$(quote_words git -C "$repo" archive "$sha")" "$(quote_words tar -x -C "$root")"
@@ -408,15 +408,15 @@ if [ "$dry_run" -eq 0 ]; then
     tail -n 40 "$work/build.log" | sed 's/^/    /' >&2
     die "build failed: go build exited $rc" 1
   fi
-  got=$("$root/bin/agent-dry" version 2>/dev/null) || got=""
-  [ "$got" = "$tag" ] || die "build failed: $root/bin/agent-dry reports '$got', want $tag" 1
-  say "build: $root/bin/agent-dry reports $tag"
+  got=$("$root/bin/rice-agent" version 2>/dev/null) || got=""
+  [ "$got" = "$tag" ] || die "build failed: $root/bin/rice-agent reports '$got', want $tag" 1
+  say "build: $root/bin/rice-agent reports $tag"
 fi
 
-clone_script="${work:-$tmp_base/agent-dry-deploy.XXXXXX}/clone.sh"
+clone_script="${work:-$tmp_base/rice-agent-deploy.XXXXXX}/clone.sh"
 if [ "$dry_run" -eq 0 ]; then
   {
-    printf '%s\n' '#!/usr/bin/env bash' '# Written by agent-dry scripts/deploy.sh; runs on a clone host.'
+    printf '%s\n' '#!/usr/bin/env bash' '# Written by rice-agent scripts/deploy.sh; runs on a clone host.'
     declare -f clone_fail clone_redact clone_main
     printf '%s\n' 'clone_main "$@"'
   } >"$clone_script"
@@ -428,30 +428,30 @@ r_status=()
 r_detail=()
 detail=""
 
-# verify NAME: agent-dry version equals the tag and agent-dry doctor ends healthy.
+# verify NAME: rice-agent version equals the tag and rice-agent doctor ends healthy.
 verify() {
   local name=$1 ver rc out last via=()
   [ "$name" = local ] || via=(host-run "$name" --timeout "$VERIFY_TIMEOUT" --)
-  show ${via[@]+"${via[@]}"} agent-dry version
-  show ${via[@]+"${via[@]}"} agent-dry doctor
+  show ${via[@]+"${via[@]}"} rice-agent version
+  show ${via[@]+"${via[@]}"} rice-agent doctor
   if [ "$dry_run" -eq 1 ]; then
     detail="would verify version $tag and doctor healthy"
     return 0
   fi
   rc=0
-  ver=$(${via[@]+"${via[@]}"} agent-dry version </dev/null 2>"$work/verify.err") || rc=$?
+  ver=$(${via[@]+"${via[@]}"} rice-agent version </dev/null 2>"$work/verify.err") || rc=$?
   ver=$(printf '%s' "$ver" | tr -d '[:space:]')
   if [ "$rc" -ne 0 ]; then
     sed 's/^/    /' "$work/verify.err" | head -n 5
-    detail="agent-dry version exited $rc"
+    detail="rice-agent version exited $rc"
     return 1
   fi
   if [ "$ver" != "$tag" ]; then
-    detail="agent-dry version is '$ver', want $tag"
+    detail="rice-agent version is '$ver', want $tag"
     return 1
   fi
   rc=0
-  out=$(${via[@]+"${via[@]}"} agent-dry doctor </dev/null 2>"$work/verify.err") || rc=$?
+  out=$(${via[@]+"${via[@]}"} rice-agent doctor </dev/null 2>"$work/verify.err") || rc=$?
   last=$(printf '%s\n' "$out" | tail -n 1)
   if [ "$rc" -ne 0 ] || [ "$last" != "doctor: healthy" ]; then
     printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/    /' || :
@@ -477,29 +477,29 @@ deploy_host() {
     local)
       say "$name: install the $tag binary into $repo (root stays this clone)"
       show mkdir -p "$repo/bin"
-      show cp "$root/bin/agent-dry" "$repo/bin/.agent-dry.deploy"
-      show mv -f "$repo/bin/.agent-dry.deploy" "$repo/bin/agent-dry"
-      show env AGENT_DRY_ROOT="$repo" "$repo/bin/agent-dry" install
+      show cp "$root/bin/rice-agent" "$repo/bin/.rice-agent.deploy"
+      show mv -f "$repo/bin/.rice-agent.deploy" "$repo/bin/rice-agent"
+      show env AGENT_DRY_ROOT="$repo" "$repo/bin/rice-agent" install
       if [ "$dry_run" -eq 0 ]; then
-        if ! { mkdir -p "$repo/bin" && cp "$root/bin/agent-dry" "$repo/bin/.agent-dry.deploy" &&
-          mv -f "$repo/bin/.agent-dry.deploy" "$repo/bin/agent-dry"; }; then
-          detail="cannot copy the binary to $repo/bin/agent-dry"
+        if ! { mkdir -p "$repo/bin" && cp "$root/bin/rice-agent" "$repo/bin/.rice-agent.deploy" &&
+          mv -f "$repo/bin/.rice-agent.deploy" "$repo/bin/rice-agent"; }; then
+          detail="cannot copy the binary to $repo/bin/rice-agent"
           return 1
         fi
-        run_logged "$log" env AGENT_DRY_ROOT="$repo" "$repo/bin/agent-dry" install || rc=$?
+        run_logged "$log" env AGENT_DRY_ROOT="$repo" "$repo/bin/rice-agent" install || rc=$?
         if [ "$rc" -ne 0 ]; then
-          detail="agent-dry install exited $rc"
+          detail="rice-agent install exited $rc"
           return 1
         fi
       fi
       ;;
     bundle)
-      say "$name: bundle install (agent-dry install --remote $name)"
-      show env AGENT_DRY_ROOT="$root" "$root/bin/agent-dry" install --remote "$name"
+      say "$name: bundle install (rice-agent install --remote $name)"
+      show env AGENT_DRY_ROOT="$root" "$root/bin/rice-agent" install --remote "$name"
       if [ "$dry_run" -eq 0 ]; then
-        run_logged "$log" env AGENT_DRY_ROOT="$root" "$root/bin/agent-dry" install --remote "$name" || rc=$?
+        run_logged "$log" env AGENT_DRY_ROOT="$root" "$root/bin/rice-agent" install --remote "$name" || rc=$?
         if [ "$rc" -ne 0 ]; then
-          detail="agent-dry install --remote $name exited $rc"
+          detail="rice-agent install --remote $name exited $rc"
           return 1
         fi
       fi
@@ -510,8 +510,8 @@ deploy_host() {
       printf '    script: refuse when git status --porcelain is non-empty; git fetch --tags origin;\n'
       printf '    require refs/tags/%s at %s; git merge --ff-only %s on main, or\n' "$tag" "$short" "$short"
       printf '    git checkout --detach refs/tags/%s when main cannot fast-forward;\n' "$tag"
-      printf '    env -u GOFLAGS CGO_ENABLED=0 go build -o bin/agent-dry -ldflags %s ./cmd/agent-dry;\n' "$(qword "$ldflags")"
-      printf '    AGENT_DRY_ROOT=<clone> bin/agent-dry install\n'
+      printf '    env -u GOFLAGS CGO_ENABLED=0 go build -o bin/rice-agent -ldflags %s ./cmd/rice-agent;\n' "$(qword "$ldflags")"
+      printf '    AGENT_DRY_ROOT=<clone> bin/rice-agent install\n'
       if [ "$dry_run" -eq 0 ]; then
         run_logged "$log" host-run "$name" --timeout "$CLONE_TIMEOUT" --script "$clone_script" -- \
           "$tag" "$sha" "$croot" "$LDVAR" || rc=$?

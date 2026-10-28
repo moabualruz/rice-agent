@@ -306,6 +306,15 @@ func TestSectionGrokEntryHasNoCharacterLimit(t *testing.T) {
 	}
 }
 
+func TestSectionDefersLegacyWrapperMarker(t *testing.T) {
+	if !defers("# wrapper\n" + legacyDeferLine + "\n") {
+		t.Fatal("legacy wrapper marker was not recognized")
+	}
+	if defers("prefix " + legacyDeferLine + " suffix\n") {
+		t.Fatal("legacy wrapper marker matched outside a whole line")
+	}
+}
+
 // A wrapper that loads the kernel by import keeps no copy: install removes a stale block,
 // a rerun leaves it alone, and check fails if a copy comes back.
 func TestSectionWrapperDefersToKernel(t *testing.T) {

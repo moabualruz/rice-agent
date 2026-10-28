@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/manifest"
 )
 
 // skipDirs are never walked for copies: VCS metadata, dependency caches, build output and test

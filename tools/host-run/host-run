@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# host-run: run a command or a local Bash script on a host named in the agent-dry config.
+# host-run: run a command or a local Bash script on a host named in the rice-agent config.
 #
 # The only string a remote login shell (fish, bash, zsh, ...) ever parses is `bash -s`. The
 # command travels on ssh's stdin as a Bash script whose words are quoted with printf %q for the
@@ -16,7 +16,7 @@ Usage: host-run <host> [options] -- <command> [args...]
        host-run <host> [options] --script <file> [args...]
        host-run --list
 
-Run a command, or a local Bash script, on a host from the agent-dry config. The command is
+Run a command, or a local Bash script, on a host from the rice-agent config. The command is
 sent on stdin as a Bash script (ssh -T -o BatchMode=yes ... 'bash -s'), each argument quoted
 for the remote bash with printf %q, so no login shell (fish included) parses it and the
 caller's stdin is never consumed. The remote command's own stdin is /dev/null.

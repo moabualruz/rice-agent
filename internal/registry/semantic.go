@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
-// Semantic recall delegates to the owner's zvec-grep (CLI zg): agent-dry never embeds or grows its
+// Semantic recall delegates to the owner's zvec-grep (CLI zg): rice-agent never embeds or grows its
 // own search. The lexical scorer stays the deterministic match decision; zvec-grep runs only after
-// a lexical miss, only over an index the owner created with `agent-dry index --semantic`, and its
+// a lexical miss, only over an index the owner created with `rice-agent index --semantic`, and its
 // hit counts as a match only when the FTS and vector routes both rank it first.
 
 // DefaultEmbedding is the model a new corpus index uses unless config semantic.embedding names one.
@@ -159,7 +159,7 @@ func (ix *Index) recall(query string) recallResult {
 	case zg == "":
 		return recallResult{Note: "semantic recall off: zg not on PATH"}
 	case !semanticIndexed(dir):
-		return recallResult{Note: "semantic recall off: no corpus index; run agent-dry index --semantic"}
+		return recallResult{Note: "semantic recall off: no corpus index; run rice-agent index --semantic"}
 	}
 	var notes []string
 	if err := ix.autoRefresh(zg, dir); err != nil {
@@ -216,7 +216,7 @@ func (ix *Index) recall(query string) recallResult {
 
 // autoRefresh updates the corpus index after cards changed, bounded by refreshTimeout. It runs
 // only when a refresh is pending and the last automatic attempt did not fail; a failure is kept
-// in the marker so later lookups do not pay for it again (agent-dry index retries).
+// in the marker so later lookups do not pay for it again (rice-agent index retries).
 func (ix *Index) autoRefresh(zg, dir string) error {
 	pending, failure := pendingState(dir)
 	if !pending || failure != "" {
@@ -309,7 +309,7 @@ type SemanticCheck struct {
 	Detail string
 }
 
-// SemanticChecks reports zg presence and the corpus index state for agent-dry doctor.
+// SemanticChecks reports zg presence and the corpus index state for rice-agent doctor.
 func SemanticChecks(getenv func(string) string) []SemanticCheck {
 	var out []SemanticCheck
 	add := func(status, name, format string, a ...any) {
@@ -325,13 +325,13 @@ func SemanticChecks(getenv func(string) string) []SemanticCheck {
 	pending, failure := pendingState(dir)
 	switch {
 	case cards == 0:
-		add("WARN", "semantic index", "no corpus at %s yet; agent-dry index writes it", dir)
+		add("WARN", "semantic index", "no corpus at %s yet; rice-agent index writes it", dir)
 	case !semanticIndexed(dir):
-		add("WARN", "semantic index", "%d cards at %s, not indexed; run agent-dry index --semantic to enable recall", cards, dir)
+		add("WARN", "semantic index", "%d cards at %s, not indexed; run rice-agent index --semantic to enable recall", cards, dir)
 	case failure != "":
-		add("WARN", "semantic index", "%d cards at %s; last refresh %s; run agent-dry index --semantic", cards, dir, failure)
+		add("WARN", "semantic index", "%d cards at %s; last refresh %s; run rice-agent index --semantic", cards, dir, failure)
 	case pending:
-		add("WARN", "semantic index", "%d cards at %s; refresh pending, the next recall or agent-dry index runs it", cards, dir)
+		add("WARN", "semantic index", "%d cards at %s; refresh pending, the next recall or rice-agent index runs it", cards, dir)
 	default:
 		add("PASS", "semantic index", "%d cards at %s indexed", cards, dir)
 	}

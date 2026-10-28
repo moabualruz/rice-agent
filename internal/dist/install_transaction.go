@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/moabualruz/agent-dry/internal/fslock"
+	"github.com/moabualruz/rice-agent/internal/fslock"
 )
 
 // Preserve previous inodes until binaries, command links and the receipt commit.

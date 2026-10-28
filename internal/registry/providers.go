@@ -12,17 +12,17 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/moabualruz/agent-dry/schemas"
+	"github.com/moabualruz/rice-agent/schemas"
 )
 
 // ProviderSchema is the schema value registry/providers.json must carry.
 const ProviderSchema = "provider/v1"
 
-// ProvidersFile is the provider registry, relative to the agent-dry root.
+// ProvidersFile is the provider registry, relative to the rice-agent root.
 const ProvidersFile = "registry/providers.json"
 
 // Provider is one provider/v1 entry: a mature CLI installed from upstream or from another owner
-// project. agent-dry lists it as data so find and show surface it; it ships no wrapper code.
+// project. rice-agent lists it as data so find and show surface it; it ships no wrapper code.
 type Provider struct {
 	Name                string   `json:"name"`
 	Summary             string   `json:"summary"`

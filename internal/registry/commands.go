@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/docs"
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/docs"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
 func init() {
@@ -30,14 +30,14 @@ const DefaultLimit = 5
 
 const maxLimit = 50
 
-const findUsage = `Usage: agent-dry find <words...> [--json] [--project <root>] [--limit N] [--debug]
-Rank agent-dry tools and skills, the project's commands (just, package.json, Makefile, scripts/,
+const findUsage = `Usage: rice-agent find <words...> [--json] [--project <root>] [--limit N] [--debug]
+Rank rice-agent tools and skills, the project's commands (just, package.json, Makefile, scripts/,
 .agent-dry.json), installed skills, external CLIs (registry/providers.json), wanted families and
 earlier misses for the intent words.
 Lines: name  summary  [kind scope] entry; an external CLI ends with (installed) or
 (missing: <install hint>), checked on PATH now; hints: WANTED <family>, MAYBE <name> and
 SEEN <date> <project>.
-When nothing clears the threshold and a corpus index exists (agent-dry index --semantic), zvec-grep
+When nothing clears the threshold and a corpus index exists (rice-agent index --semantic), zvec-grep
 (zg) recalls paraphrases within 3 s: a hit both its FTS and vector routes rank first is a result
 (source semantic); the next hit prints as one MAYBE hint. Without zg or the index, or on any zg
 failure, find stays lexical.
@@ -49,21 +49,21 @@ Options:
   --debug           print one stderr line on what semantic recall did
 
 Exit codes: 0 a result cleared the threshold or semantic recall agreed, 1 none did (the miss is
-logged; hints alone do not count), 2 usage error, 3 unreadable index or agent-dry root.
-Example: agent-dry find scan for em dash
+logged; hints alone do not count), 2 usage error, 3 unreadable index or rice-agent root.
+Example: rice-agent find scan for em dash
 `
 
-const showUsage = `Usage: agent-dry show <name> [--project <root>]
-Print an entry's manifest fields, the first 40 lines of its --help (agent-dry tools) or how to run
+const showUsage = `Usage: rice-agent show <name> [--project <root>]
+Print an entry's manifest fields, the first 40 lines of its --help (rice-agent tools) or how to run
 it (project recipes and scripts), the path to read (skills), or an external CLI's provider fields
 and, when its command is on PATH, the first 30 lines of its --help.
 
-Exit codes: 0 shown, 1 no entry by that name, 2 usage error, 3 unreadable index or agent-dry root.
-Example: agent-dry show check-no-dashes
+Exit codes: 0 shown, 1 no entry by that name, 2 usage error, 3 unreadable index or rice-agent root.
+Example: rice-agent show check-no-dashes
 `
 
-const indexUsage = `Usage: agent-dry index [--rebuild] [--semantic]
-Cache agent-dry tools, skills, installed skills, external providers and wanted families in
+const indexUsage = `Usage: rice-agent index [--rebuild] [--semantic]
+Cache rice-agent tools, skills, installed skills, external providers and wanted families in
 <state>/index.json. find uses the cache while the source modification times are unchanged; project
 commands and whether an external command is on PATH stay live. Every rebuild also writes one card
 per tool, skill, external provider and wanted family to <state>/corpus/<kind>/<name>.md and
@@ -78,10 +78,10 @@ Options:
 
 Exit codes: 0 index fresh or rebuilt, 2 usage error, 3 unreadable root or index, index not
 writable, or --semantic without zg or with a failed zg index.
-Example: agent-dry index --semantic
+Example: rice-agent index --semantic
 `
 
-const guideUsage = `Usage: agent-dry guide [topic | --list]
+const guideUsage = `Usage: rice-agent guide [topic | --list]
 Print the DRY guide (find, decide, reuse, extend, build, inline), or one embedded topic: "tools" is
 the tool contract and every other docs/<topic>.md is a topic.
 
@@ -89,7 +89,7 @@ Options:
   --list  print the topic names, one per line
 
 Exit codes: 0 printed, 2 usage error or unknown topic.
-Example: agent-dry guide tools
+Example: rice-agent guide tools
 `
 
 func isHelp(a string) bool { return a == "-h" || a == "--help" }
@@ -173,13 +173,13 @@ func runFind(env *cli.Env) int {
 			continue
 		}
 		if strings.HasPrefix(a, "-") && len(a) > 1 {
-			return cli.Usagef(env, "find: unknown flag %s; see agent-dry find --help", a)
+			return cli.Usagef(env, "find: unknown flag %s; see rice-agent find --help", a)
 		}
 		words = append(words, a)
 	}
 	query := strings.TrimSpace(strings.Join(words, " "))
 	if query == "" {
-		return cli.Usagef(env, "find: give intent words, for example: agent-dry find scan for em dash")
+		return cli.Usagef(env, "find: give intent words, for example: rice-agent find scan for em dash")
 	}
 	if err := checkProject(project); err != nil {
 		return cli.Usagef(env, "find: %v", err)
@@ -203,12 +203,12 @@ func runFind(env *cli.Env) int {
 		rec.Note = "semantic recall skipped: lexical match"
 	}
 	if debug {
-		fmt.Fprintf(env.Stderr, "agent-dry: debug: %s\n", rec.Note)
+		fmt.Fprintf(env.Stderr, "rice-agent: debug: %s\n", rec.Note)
 	}
 	hints := ix.hints(query, results, rec)
 	if len(results) == 0 {
 		if err := ix.recordMiss(query, time.Now(), rec.Ran); err != nil {
-			fmt.Fprintf(env.Stderr, "agent-dry: warning: miss not logged: %v\n", err)
+			fmt.Fprintf(env.Stderr, "rice-agent: warning: miss not logged: %v\n", err)
 		}
 	}
 	if asJSON {
@@ -314,10 +314,10 @@ func wantedHint(f *Family) Hint {
 func (ix *Index) warn(w io.Writer) {
 	for i, msg := range ix.warnings {
 		if i == 3 {
-			fmt.Fprintf(w, "agent-dry: warning: %d more source warnings; run agent-dry index --rebuild\n", len(ix.warnings)-3)
+			fmt.Fprintf(w, "rice-agent: warning: %d more source warnings; run rice-agent index --rebuild\n", len(ix.warnings)-3)
 			return
 		}
-		fmt.Fprintf(w, "agent-dry: warning: %s\n", msg)
+		fmt.Fprintf(w, "rice-agent: warning: %s\n", msg)
 	}
 }
 
@@ -338,12 +338,12 @@ func runShow(env *cli.Env) int {
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
-			return cli.Usagef(env, "show: unknown flag %s; see agent-dry show --help", a)
+			return cli.Usagef(env, "show: unknown flag %s; see rice-agent show --help", a)
 		}
 		names = append(names, a)
 	}
 	if len(names) != 1 {
-		return cli.Usagef(env, "show: give exactly one name, for example: agent-dry show check-no-dashes")
+		return cli.Usagef(env, "show: give exactly one name, for example: rice-agent show check-no-dashes")
 	}
 	if err := checkProject(project); err != nil {
 		return cli.Usagef(env, "show: %v", err)
@@ -354,7 +354,7 @@ func runShow(env *cli.Env) int {
 	}
 	ds := ix.lookup(names[0])
 	if len(ds) == 0 {
-		fmt.Fprintf(env.Stderr, "agent-dry: show: no entry named %q; try agent-dry find %s\n", redact(names[0]), redact(names[0]))
+		fmt.Fprintf(env.Stderr, "rice-agent: show: no entry named %q; try rice-agent find %s\n", redact(names[0]), redact(names[0]))
 		return cli.ExitNegative
 	}
 	w := bufio.NewWriter(env.Stdout)
@@ -381,7 +381,7 @@ func (ix *Index) showDoc(w io.Writer, d *doc) {
 	switch {
 	case d.Tool != nil:
 		t := d.Tool
-		fmt.Fprintf(w, "%s  [%s %s] agent-dry tool, status %s\n", t.Name, t.Kind, t.Scope, t.Status)
+		fmt.Fprintf(w, "%s  [%s %s] rice-agent tool, status %s\n", t.Name, t.Kind, t.Scope, t.Status)
 		kv(w, "summary", t.Summary)
 		entry := ix.tilde(t.EntryPath())
 		if e := ix.displayEntry(d); e != entry {
@@ -413,7 +413,7 @@ func (ix *Index) showDoc(w io.Writer, d *doc) {
 	case d.Provider != nil:
 		p := d.Provider
 		at := ix.installedAt(p)
-		fmt.Fprintf(w, "%s  [%s %s] external CLI, no agent-dry wrapper\n", p.Name, d.Kind, d.Scope)
+		fmt.Fprintf(w, "%s  [%s %s] external CLI, no rice-agent wrapper\n", p.Name, d.Kind, d.Scope)
 		kv(w, "summary", p.Summary)
 		if at != "" {
 			kv(w, "command", p.Command+" (installed: "+ix.tilde(at)+")")
@@ -513,7 +513,7 @@ func runIndex(env *cli.Env) int {
 		case a == "--semantic":
 			semantic = true
 		default:
-			return cli.Usagef(env, "index: unexpected argument %s; see agent-dry index --help", a)
+			return cli.Usagef(env, "index: unexpected argument %s; see rice-agent index --help", a)
 		}
 	}
 	ix, err := load(env.Getenv, Options{NoProject: true}, rebuild)
@@ -547,9 +547,9 @@ func runIndex(env *cli.Env) int {
 	if pending, _ := pendingState(dir); pending && semanticIndexed(dir) {
 		zg := lookPath(env.Getenv, "zg")
 		if zg == "" {
-			fmt.Fprintf(env.Stderr, "agent-dry: warning: semantic index refresh pending; zg not on PATH\n")
+			fmt.Fprintf(env.Stderr, "rice-agent: warning: semantic index refresh pending; zg not on PATH\n")
 		} else if err := refreshCorpus(zg, dir, refreshTimeout); err != nil {
-			fmt.Fprintf(env.Stderr, "agent-dry: warning: semantic index refresh failed: %v; run agent-dry index --semantic\n", err)
+			fmt.Fprintf(env.Stderr, "rice-agent: warning: semantic index refresh failed: %v; run rice-agent index --semantic\n", err)
 		} else {
 			fmt.Fprintf(env.Stdout, "semantic index refreshed at %s\n", ix.tilde(dir))
 		}
@@ -594,7 +594,7 @@ func (ix *Index) indexSemantic(env *cli.Env, rebuild bool) int {
 	fmt.Fprintf(env.Stdout, "semantic index %s: %d cards at %s in %.1fs (zg %s)\n",
 		verb, cards, ix.tilde(dir), time.Since(start).Seconds(), strings.Join(args[2:], " "))
 	if n := indexedFiles(zg, dir); n >= 0 && n < cards {
-		fmt.Fprintf(env.Stderr, "agent-dry: warning: zg status reports %d of %d cards indexed; recall misses the rest\n", n, cards)
+		fmt.Fprintf(env.Stderr, "rice-agent: warning: zg status reports %d of %d cards indexed; recall misses the rest\n", n, cards)
 	}
 	return cli.ExitOK
 }
@@ -613,7 +613,7 @@ func runGuide(env *cli.Env) int {
 		fmt.Fprint(env.Stdout, guideDocs.guide)
 		return cli.ExitOK
 	case len(args) > 1:
-		return cli.Usagef(env, "guide: give at most one topic; see agent-dry guide --list")
+		return cli.Usagef(env, "guide: give at most one topic; see rice-agent guide --list")
 	case isHelp(args[0]):
 		fmt.Fprint(env.Stdout, guideUsage)
 		return cli.ExitOK
@@ -625,7 +625,7 @@ func runGuide(env *cli.Env) int {
 		w.Flush()
 		return cli.ExitOK
 	case strings.HasPrefix(args[0], "-"):
-		return cli.Usagef(env, "guide: unknown flag %s; see agent-dry guide --help", args[0])
+		return cli.Usagef(env, "guide: unknown flag %s; see rice-agent guide --help", args[0])
 	}
 	text, ok := guideDocs.topic(args[0])
 	if !ok {

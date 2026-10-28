@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
 // providerEnv uses the fixture PATH, where dupe-finder and srn exist and token-meter does not.
@@ -172,7 +172,7 @@ func TestShowExternal(t *testing.T) {
 		t.Fatalf("exit %d %s", code, errOut)
 	}
 	for _, w := range []string{
-		"dupe-finder  [external global] external CLI, no agent-dry wrapper",
+		"dupe-finder  [external global] external CLI, no rice-agent wrapper",
 		"command:      dupe-finder (installed: " + fixture("bin", "dupe-finder") + ")",
 		"owner:        upstream:https://example.com/dupe-finder",
 		"license:      MIT\n",

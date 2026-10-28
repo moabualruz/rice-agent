@@ -3,7 +3,7 @@
 Surgeon is a policy plus an index of existing engines. The owner's product `rice-edit` owns
 plan-verified semantic edits (rename, move, navigate, diagnostics, experimental ast-grep rewrites;
 Go, TypeScript, Rust, Java, Dart) with a journal and a verifier. Language servers and structural tools
-are external CLIs listed by `agent-dry find`. agent-dry adds no editing engine.
+are external CLIs listed by `rice-agent find`. rice-agent adds no editing engine.
 
 ## Choose the edit mechanism
 

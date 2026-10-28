@@ -1,4 +1,4 @@
-// Package paths resolves the agent-dry root, state directory and per-host config file.
+// Package paths resolves the Rice Agent root, state directory and per-host config file.
 package paths
 
 import (
@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-// Marker identifies an agent-dry root (a clone or an installed bundle).
+// Marker identifies a Rice Agent root (a clone or an installed bundle).
 const Marker = "registry/wanted.json"
 
 // Config is ~/.config/agent-dry/config.json. Tools read the same file with jq; keep keys stable.
@@ -22,7 +22,7 @@ type Config struct {
 	OpenBao *OpenBao `json:"openbao,omitempty"`
 	// Repos lists repository roots that audit and vendored-copy checks visit.
 	Repos []string `json:"repos,omitempty"`
-	// Semantic configures zvec-grep recall over the registry corpus (agent-dry index --semantic).
+	// Semantic configures zvec-grep recall over the registry corpus (rice-agent index --semantic).
 	Semantic *Semantic `json:"semantic,omitempty"`
 }
 
@@ -35,7 +35,7 @@ type Semantic struct {
 type Host struct {
 	SSH   string `json:"ssh"`             // user@address
 	Shell string `json:"shell,omitempty"` // login shell family, for example fish or bash
-	// Install is how scripts/deploy.sh releases a tag to this host: "bundle" (agent-dry install
+	// Install is how scripts/deploy.sh releases a tag to this host: "bundle" (rice-agent install
 	// --remote, for hosts without Go or GitHub access) or "clone" (fetch, fast-forward or detach,
 	// and build the clone at Root). Empty means deploy skips the host.
 	Install string `json:"install,omitempty"`
@@ -92,7 +92,7 @@ func LoadConfig(getenv func(string) string) (*Config, error) {
 	return &c, nil
 }
 
-// Root finds the agent-dry root: AGENT_DRY_ROOT, then config root, then the directory above the
+// Root finds the rice-agent root: AGENT_DRY_ROOT, then config root, then the directory above the
 // real path of the running executable that contains Marker.
 func Root(getenv func(string) string) (string, error) {
 	if p := getenv("AGENT_DRY_ROOT"); p != "" {
@@ -116,7 +116,7 @@ func Root(getenv func(string) string) (string, error) {
 			break
 		}
 	}
-	return "", fmt.Errorf("agent-dry root not found; set AGENT_DRY_ROOT or \"root\" in %s", ConfigPath(getenv))
+	return "", fmt.Errorf("rice-agent root not found; set AGENT_DRY_ROOT or \"root\" in %s", ConfigPath(getenv))
 }
 
 func checkRoot(p string) (string, error) {
@@ -125,7 +125,7 @@ func checkRoot(p string) (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(filepath.Join(abs, Marker)); err != nil {
-		return "", fmt.Errorf("%s is not an agent-dry root (missing %s)", abs, Marker)
+		return "", fmt.Errorf("%s is not an rice-agent root (missing %s)", abs, Marker)
 	}
 	return abs, nil
 }

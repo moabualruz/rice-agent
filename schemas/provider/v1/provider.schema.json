@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/moabualruz/agent-dry/schemas/provider/v1/provider.schema.json",
-  "title": "agent-dry external provider registry v1",
-  "description": "registry/providers.json: mature CLIs installed from upstream or from other owner projects, listed as data so find and show surface them; agent-dry ships no wrapper code for them.",
+  "title": "Rice Agent external provider registry v1",
+  "description": "registry/providers.json: mature CLIs installed from upstream or from other owner projects, listed as data so find and show surface them; Rice Agent ships no wrapper code for them.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "providers"],

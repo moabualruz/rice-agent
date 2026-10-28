@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
 // toolStat counts one registered tool's inline reimplementations and invocations.

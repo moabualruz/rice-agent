@@ -22,7 +22,7 @@ func newInstallFixture(t *testing.T) *installFixture {
 	f := &installFixture{root: fixtureRoot(t), home: tempDir(t)}
 	f.prefix = filepath.Join(f.home, ".local", "bin")
 	f.state = filepath.Join(f.home, "state")
-	writeFile(t, filepath.Join(f.root, "bin", "agent-dry"), "#!/usr/bin/env bash\necho fixture agent-dry\n", 0o755)
+	writeFile(t, filepath.Join(f.root, "bin", "rice-agent"), "#!/usr/bin/env bash\necho fixture rice-agent\n", 0o755)
 	f.vars = map[string]string{
 		"HOME":             f.home,
 		"AGENT_DRY_ROOT":   f.root,
@@ -52,7 +52,7 @@ func linkNames(links []Link) []string {
 }
 
 func wantNames() []string {
-	n := []string{"agent-dry", "dfx-active", "dfx-hello"}
+	n := []string{"agent-dry", "rice-agent", "dfx-active", "dfx-hello"}
 	if platform() == "linux-arm64" {
 		n = append(n, "dfx-armonly")
 	}
@@ -230,7 +230,7 @@ func TestInstallCollisionDoesNotReplacePackagedGoTool(t *testing.T) {
 func TestInstallBuildsAndLinksGoTools(t *testing.T) {
 	f := newInstallFixture(t)
 	requireCommands(t, "go")
-	writeFile(t, filepath.Join(f.root, "go.mod"), "module github.com/moabualruz/agent-dry\n\ngo 1.21\n", 0o644)
+	writeFile(t, filepath.Join(f.root, "go.mod"), "module github.com/moabualruz/rice-agent\n\ngo 1.21\n", 0o644)
 	addGoToolFixture(t, f.root, "dfx-go")
 	goBin, err := exec.LookPath("go")
 	if err != nil {
@@ -328,7 +328,7 @@ func TestInstallFallsBackToRunningExecutable(t *testing.T) {
 	}
 	for _, l := range decodeReceipt(t, out).Links {
 		if l.Name == "agent-dry" && l.Target != exe {
-			t.Fatalf("agent-dry target %s, want %s", l.Target, exe)
+			t.Fatalf("rice-agent target %s, want %s", l.Target, exe)
 		}
 	}
 	// The recorded target is ours even though it is outside the root: reinstall and uninstall own it.

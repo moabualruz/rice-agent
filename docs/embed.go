@@ -1,4 +1,4 @@
-// Package docs embeds the guidance the CLI prints with `agent-dry guide`.
+// Package docs embeds the guidance the CLI prints with `rice-agent guide`.
 package docs
 
 import (

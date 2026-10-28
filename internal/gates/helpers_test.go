@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/paths"
-	"github.com/moabualruz/agent-dry/internal/registry"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
 // TestMain pins the Go build cache before tests move HOME, so Go scaffolds build warm.
@@ -61,7 +61,7 @@ func hit(name, kind string) registry.Result {
 	return registry.Result{Name: name, Summary: "Use when testing.", Kind: kind, Scope: "global", Entry: name, Source: "agent-dry", Score: registry.Threshold + 3}
 }
 
-// isolate points agent-dry at root and moves HOME, state and config into temporary directories.
+// isolate points rice-agent at root and moves HOME, state and config into temporary directories.
 func isolate(t *testing.T, root string) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -73,7 +73,7 @@ func isolate(t *testing.T, root string) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
 }
 
-// emptyRoot is a fresh agent-dry root with only the marker file.
+// emptyRoot is a fresh rice-agent root with only the marker file.
 func emptyRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -81,7 +81,7 @@ func emptyRoot(t *testing.T) string {
 	return root
 }
 
-// rootWith is a fresh agent-dry root holding copies of the named fixture tools.
+// rootWith is a fresh rice-agent root holding copies of the named fixture tools.
 func rootWith(t *testing.T, tools ...string) string {
 	t.Helper()
 	root := emptyRoot(t)

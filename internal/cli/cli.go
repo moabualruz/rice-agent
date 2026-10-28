@@ -8,7 +8,7 @@ import (
 	"sort"
 )
 
-// Exit codes shared by every agent-dry command.
+// Exit codes shared by every rice-agent command.
 const (
 	ExitOK       = 0 // success
 	ExitNegative = 1 // negative result: nothing found, a gate failed, drift detected
@@ -37,7 +37,7 @@ var registry = map[string]Command{}
 // Register adds a command; each command file calls it from init.
 func Register(c Command) {
 	if _, dup := registry[c.Name]; dup {
-		panic("agent-dry: duplicate command " + c.Name)
+		panic("rice-agent: duplicate command " + c.Name)
 	}
 	registry[c.Name] = c
 }
@@ -60,13 +60,13 @@ func Names() []string {
 
 // Usagef prints a usage error and returns ExitUsage.
 func Usagef(env *Env, format string, a ...any) int {
-	fmt.Fprintf(env.Stderr, "agent-dry: "+format+"\n", a...)
+	fmt.Fprintf(env.Stderr, "rice-agent: "+format+"\n", a...)
 	return ExitUsage
 }
 
 // Envf prints an environment error and returns ExitEnv.
 func Envf(env *Env, format string, a ...any) int {
-	fmt.Fprintf(env.Stderr, "agent-dry: "+format+"\n", a...)
+	fmt.Fprintf(env.Stderr, "rice-agent: "+format+"\n", a...)
 	return ExitEnv
 }
 

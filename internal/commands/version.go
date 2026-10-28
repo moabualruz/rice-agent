@@ -1,14 +1,14 @@
-// Package commands registers every agent-dry subcommand. Each command lives in its own file and
+// Package commands registers every rice-agent subcommand. Each command lives in its own file and
 // registers itself from init, so parallel work never edits a shared dispatch table.
 package commands
 
 import (
 	"fmt"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
-// Version is set at build time with -ldflags "-X github.com/moabualruz/agent-dry/internal/commands.Version=v0.1.0".
+// Version is set at build time with -ldflags "-X github.com/moabualruz/rice-agent/internal/commands.Version=v0.1.0".
 var Version = "dev"
 
 func init() {

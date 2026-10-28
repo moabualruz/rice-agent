@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/manifest"
 )
 
 // TestCensusCountsTrackedFilesOnly keeps untracked agent working copies out of the copy census.

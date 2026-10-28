@@ -1,7 +1,7 @@
 # Forge: verified iterative improvement
 
-Forge is a capability, not a separate product. Building tools is the DRY workflow (`agent-dry new`,
-then `agent-dry check`). Improving something iteratively follows the karpathy/autoresearch contract,
+Forge is a capability, not a separate product. Building tools is the DRY workflow (`rice-agent new`,
+then `rice-agent check`). Improving something iteratively follows the karpathy/autoresearch contract,
 with one deterministic step, `ratchet`, called by whatever loop drives the work (the harness's goal or
 loop feature, or a person). ratchet never edits code and never loops by itself.
 
@@ -31,7 +31,7 @@ ratchet finish        # kept commits and diff for review
 - Use it where a cheap, deterministic metric exists: test duration, binary size, lines, token counts,
   benchmark medians, failing-check counts. Do not hill-climb design quality with a model judge.
 - Behavior preservation is a hard gate, not a trade-off against the metric.
-- Self-healing of the tool library: CI runs `agent-dry check --all` on a schedule, so a tool that breaks
+- Self-healing of the tool library: CI runs `rice-agent check --all` on a schedule, so a tool that breaks
   after an environment change shows up without anyone touching it.
 - Extract Forge into its own repository only when it gains its own persistent state, targets outside
-  agent-dry or long-running jobs.
+  rice-agent or long-running jobs.

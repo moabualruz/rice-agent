@@ -12,16 +12,16 @@ import (
 	"sort"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/commands"
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/commands"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
-const installUsage = `Usage: agent-dry install [--dry-run] [--uninstall] [--prefix <dir>] [--remote <host>]
+const installUsage = `Usage: rice-agent install [--dry-run] [--uninstall] [--prefix <dir>] [--remote <host>]
 
-Link agent-dry and every trial or active global tool for this platform into the prefix as
-<name> symlinks into the agent-dry root, then write a receipt to the state directory.
+Link rice-agent, its temporary agent-dry alias, and every trial or active global tool for this
+platform into the prefix as <name> symlinks into the Rice Agent root, then write a receipt to the state directory.
 An existing file that is not a symlink into the root, or another command of the same name on
 PATH, is a collision: every collision is reported and nothing changes.
 
@@ -35,7 +35,7 @@ Options:
 Exit codes: 0 installed or nothing to do, 1 collision, 2 usage, 3 environment (no root, bad
 manifest, missing entry, unknown host), remote: the remote command's status (255 is ssh failure).
 
-Example: agent-dry install --dry-run
+Example: rice-agent install --dry-run
 `
 
 // ReceiptSchema identifies install receipts.
@@ -169,9 +169,9 @@ type want struct {
 	requires []string
 }
 
-// desiredLinks lists the agent-dry binary and every installable tool under root.
+// desiredLinks lists Rice Agent, its one-release alias, and every installable tool under root.
 func desiredLinks(root string, binaries map[string]string, dryRun bool) ([]want, error) {
-	bin := filepath.Join(root, "bin", "agent-dry")
+	bin := filepath.Join(root, "bin", "rice-agent")
 	if info, err := os.Stat(bin); err != nil || !info.Mode().IsRegular() {
 		exe, err := executable()
 		if err != nil {
@@ -183,12 +183,12 @@ func desiredLinks(root string, binaries map[string]string, dryRun bool) ([]want,
 		}
 		bin = realOrSelf(exe)
 	}
-	out := []want{{name: "agent-dry", target: bin}}
+	out := []want{{name: "rice-agent", target: bin}, {name: "agent-dry", target: bin}}
 	tools, err := manifest.LoadAll(filepath.Join(root, "tools"))
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{"agent-dry": true}
+	seen := map[string]bool{"rice-agent": true, "agent-dry": true}
 	for _, t := range tools {
 		if !installable(t) {
 			continue
@@ -371,11 +371,11 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 			case owned(dest, root, prev, lp):
 				l.Action = "updated"
 			default:
-				collisions = append(collisions, fmt.Sprintf("%s: symlink to %s, outside the agent-dry root", lp, dest))
+				collisions = append(collisions, fmt.Sprintf("%s: symlink to %s, outside the rice-agent root", lp, dest))
 				continue
 			}
 		default:
-			collisions = append(collisions, fmt.Sprintf("%s: exists and is not a symlink into the agent-dry root", lp))
+			collisions = append(collisions, fmt.Sprintf("%s: exists and is not a symlink into the rice-agent root", lp))
 			continue
 		}
 		if other := shadowing(w.name, w.target, prefix, env.Getenv("PATH")); other != "" {
@@ -393,9 +393,9 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 	}
 	if len(collisions) > 0 {
 		for _, c := range collisions {
-			fmt.Fprintf(env.Stderr, "agent-dry: install: collision: %s\n", c)
+			fmt.Fprintf(env.Stderr, "rice-agent: install: collision: %s\n", c)
 		}
-		fmt.Fprintf(env.Stderr, "agent-dry: install: %d collision(s); nothing changed\n", len(collisions))
+		fmt.Fprintf(env.Stderr, "rice-agent: install: %d collision(s); nothing changed\n", len(collisions))
 		return cli.ExitNegative
 	}
 
@@ -419,7 +419,7 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 		}
 		dest, err := readLinkAbs(lp)
 		if err != nil || !owned(dest, root, prev, lp) {
-			l.Action, l.Reason = "skipped", "points outside the agent-dry root"
+			l.Action, l.Reason = "skipped", "points outside the rice-agent root"
 			removed = append(removed, l)
 			continue
 		}
@@ -518,7 +518,7 @@ func installLinks(env *cli.Env, prefix string, dryRun bool) (code int) {
 		return cli.Envf(env, "install: %v", err)
 	}
 	if !onPath(prefix, env.Getenv("PATH")) {
-		fmt.Fprintf(env.Stderr, "agent-dry: install: %s is not on PATH; add it to your shell profile\n", prefix)
+		fmt.Fprintf(env.Stderr, "rice-agent: install: %s is not on PATH; add it to your shell profile\n", prefix)
 	}
 	return cli.ExitOK
 }
@@ -586,7 +586,7 @@ func uninstallLinks(env *cli.Env, dryRun bool, prefix string) (code int) {
 	}
 	defer unlock()
 	if r == nil {
-		fmt.Fprintf(env.Stderr, "agent-dry: install: no receipt at %s; nothing to uninstall\n", rpath)
+		fmt.Fprintf(env.Stderr, "rice-agent: install: no receipt at %s; nothing to uninstall\n", rpath)
 		return cli.ExitOK
 	}
 	roots := []string{r.Root}
@@ -610,7 +610,7 @@ func uninstallLinks(env *cli.Env, dryRun bool, prefix string) (code int) {
 			ours = ours || (err == nil && within(root, dest))
 		}
 		if !ours {
-			l.Action, l.Reason = "skipped", "points outside the agent-dry root"
+			l.Action, l.Reason = "skipped", "points outside the rice-agent root"
 			res.Skipped = append(res.Skipped, l)
 			continue
 		}

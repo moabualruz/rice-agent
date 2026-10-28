@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
 const fixtures = "../../testdata/dist"
@@ -83,7 +83,7 @@ func tempDir(t *testing.T) string {
 	return d
 }
 
-// fixtureRoot copies the fixture agent-dry root into a temporary directory.
+// fixtureRoot copies the fixture rice-agent root into a temporary directory.
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(tempDir(t), "root")
@@ -118,16 +118,16 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// fixtureModule turns a fixture root into a buildable source checkout whose cmd/agent-dry is a
+// fixtureModule turns a fixture root into a buildable source checkout whose cmd/rice-agent is a
 // tiny stand-in: `version` prints the stamped version; anything else records its arguments in
 // $HOME/install-args and exits 7, so remote tests can see the exit status travel back.
 func fixtureModule(t *testing.T) string {
 	t.Helper()
 	root := fixtureRoot(t)
-	writeFile(t, filepath.Join(root, "go.mod"), "module github.com/moabualruz/agent-dry\n\ngo 1.21\n", 0o644)
+	writeFile(t, filepath.Join(root, "go.mod"), "module github.com/moabualruz/rice-agent\n\ngo 1.21\n", 0o644)
 	writeFile(t, filepath.Join(root, "internal", "commands", "version.go"),
 		"package commands\n\n// Version is stamped by the bundle ldflag.\nvar Version = \"dev\"\n", 0o644)
-	writeFile(t, filepath.Join(root, "cmd", "agent-dry", "main.go"), `package main
+	writeFile(t, filepath.Join(root, "cmd", "rice-agent", "main.go"), `package main
 
 import (
 	"fmt"
@@ -135,7 +135,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/commands"
+	"github.com/moabualruz/rice-agent/internal/commands"
 )
 
 func main() {
@@ -147,7 +147,7 @@ func main() {
 	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), "install-args"), []byte(line), 0o644); err != nil {
 		os.Exit(3)
 	}
-	fmt.Println("fixture agent-dry", commands.Version, line)
+	fmt.Println("fixture rice-agent", commands.Version, line)
 	os.Exit(7)
 }
 `, 0o644)
@@ -164,9 +164,9 @@ func requireCommands(t *testing.T, names ...string) {
 }
 
 func TestCommandsRegisteredWithHelp(t *testing.T) {
-	for _, name := range []string{"install", "doctor", "vendor", "bundle", "section"} {
+	for _, name := range []string{"install", "doctor", "vendor", "bundle", "section", "instruction"} {
 		code, out, errb := run(t, map[string]string{}, name, "--help")
-		if code != 0 || !strings.HasPrefix(out, "Usage: agent-dry "+name) {
+		if code != 0 || !strings.HasPrefix(out, "Usage: rice-agent "+name) {
 			t.Errorf("%s --help: code %d, out %q, err %q", name, code, out, errb)
 		}
 		if hasDash(out) {

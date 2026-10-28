@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/gates"
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/gates"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
 // defaultMaxFiles bounds a run; main sessions are read before subagent transcripts.
@@ -28,7 +28,7 @@ const defaultMaxFiles = 1000
 var now = time.Now
 var hermesLookPath = exec.LookPath
 
-const usageText = `Usage: agent-dry audit [--since 14d] [--transcripts <dir>] [--max-files N] [--json]
+const usageText = `Usage: rice-agent audit [--since 14d] [--transcripts <dir>] [--max-files N] [--json]
 
 Measure lookup, reuse and re-typing (spec section 10) from Claude Code, Codex and Hermes sessions,
 the find miss log and the tool manifests, against the recorded baselines. Reports agent-dry
@@ -47,7 +47,7 @@ Options:
 Exit codes: 0 report printed, 1 no transcript in the window, 2 usage error,
 3 unreadable config, transcript root or miss log.
 
-Example: agent-dry audit --since 32d --max-files 400
+Example: rice-agent audit --since 32d --max-files 400
 `
 
 func init() {
@@ -93,10 +93,10 @@ func run(env *cli.Env) int {
 	maxFiles := fs.Int("max-files", defaultMaxFiles, "")
 	asJSON := fs.Bool("json", false, "")
 	if err := fs.Parse(env.Args); err != nil {
-		return cli.Usagef(env, "audit: %v; run agent-dry audit --help", err)
+		return cli.Usagef(env, "audit: %v; run rice-agent audit --help", err)
 	}
 	if fs.NArg() > 0 {
-		return cli.Usagef(env, "audit: unexpected argument %q; run agent-dry audit --help", fs.Arg(0))
+		return cli.Usagef(env, "audit: unexpected argument %q; run rice-agent audit --help", fs.Arg(0))
 	}
 	window, err := parseSince(*since)
 	if err != nil {
@@ -109,7 +109,7 @@ func run(env *cli.Env) int {
 	warnings := 0
 	warn := func(format string, a ...any) {
 		warnings++
-		fmt.Fprintf(env.Stderr, "agent-dry audit: warning: "+format+"\n", a...)
+		fmt.Fprintf(env.Stderr, "rice-agent audit: warning: "+format+"\n", a...)
 	}
 
 	cfg, err := paths.LoadConfig(env.Getenv)
@@ -120,7 +120,7 @@ func run(env *cli.Env) int {
 
 	var tools []*manifest.Tool
 	if root, err := paths.Root(env.Getenv); err != nil {
-		warn("no agent-dry root (%v); reporting transcript metrics only", err)
+		warn("no rice-agent root (%v); reporting transcript metrics only", err)
 	} else {
 		loaded, err := manifest.LoadAll(filepath.Join(root, "tools"))
 		if err != nil {

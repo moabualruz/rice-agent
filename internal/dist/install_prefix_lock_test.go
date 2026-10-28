@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/fslock"
+	"github.com/moabualruz/rice-agent/internal/fslock"
 )
 
 func assertInstallLocksHeld(t *testing.T, paths []string) {

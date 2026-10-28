@@ -1,6 +1,6 @@
 package gates
 
-import "github.com/moabualruz/agent-dry/internal/manifest"
+import "github.com/moabualruz/rice-agent/internal/manifest"
 
 // ToolTestPasses runs the manifest's behavior test under the same limits and environment as G5.
 func ToolTestPasses(t *manifest.Tool) bool {

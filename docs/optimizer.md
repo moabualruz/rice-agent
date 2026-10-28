@@ -8,7 +8,7 @@ JSON snapshots cited in Rice documents.
 
 | Question | Source |
 | --- | --- |
-| Are agents reusing tools or re-typing them? | `agent-dry audit --since 14d [--json]` |
+| Are agents reusing tools or re-typing them? | `rice-agent audit --since 14d [--json]` |
 | How many tokens and how much money per session or day? | `ccusage` (local, `--json --offline`); the harness's own `/usage`, `/cost` and `/context` |
 | How much always-on context does each harness load? | byte size of the global entry files and loaded MCP tool definitions |
 | Which CI jobs fail or take long? | GitHub Actions run data (`pr-flow runs`), Rice Observe pipeline and failure records |
@@ -16,7 +16,7 @@ JSON snapshots cited in Rice documents.
 ## Reduce, structural changes first
 
 1. Remove duplicated or stale always-on instructions before anything else; move detail behind a
-   pointer (`agent-dry guide <topic>`).
+   pointer (`rice-agent guide <topic>`).
 2. Keep raw output out of context: bounded tool output, filtering tools, subagents for wide searches.
 3. Replace re-typed procedures with tools (the DRY workflow).
 4. Only then consider output-compression add-ons, and only with an A/B measurement: independent

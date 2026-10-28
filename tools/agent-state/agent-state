@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agent-state launcher: uses a packaged platform binary when present, otherwise builds from source.
-# Scaffolded by agent-dry new; Bash 3.2 compatible.
+# Scaffolded by rice-agent new; Bash 3.2 compatible.
 set -euo pipefail
 
 src="${BASH_SOURCE[0]}"

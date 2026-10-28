@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// The corpus is one markdown card per agent-dry tool, agent-dry skill, external provider and
+// The corpus is one markdown card per rice-agent tool, rice-agent skill, external provider and
 // wanted family under <StateDir>/corpus/<kind>/<name>.md (kinds tool, skill, provider, wanted).
 // It is rewritten whenever the cached index is rebuilt and is what an explicitly created
 // zvec-grep index covers (index --semantic).
@@ -75,7 +75,7 @@ func cardRel(d *doc) string {
 }
 
 // cardText is the markdown card: the name as the heading, then kind, entry, summary and intents.
-// Paths are relative to the agent-dry root so cards do not change when the root moves.
+// Paths are relative to the rice-agent root so cards do not change when the root moves.
 func cardText(d *doc, root string) string {
 	rel := func(p string) string {
 		if r, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(r, "..") {
@@ -86,7 +86,7 @@ func cardText(d *doc, root string) string {
 	var kind, entry string
 	switch {
 	case d.Tool != nil:
-		kind = d.Kind + " " + d.Scope + " (agent-dry tool)"
+		kind = d.Kind + " " + d.Scope + " (rice-agent tool)"
 		entry = d.Name + " (" + rel(d.Tool.EntryPath()) + ")"
 	case d.Provider != nil:
 		p := d.Provider
@@ -96,7 +96,7 @@ func cardText(d *doc, root string) string {
 		kind = "wanted global (no tool yet)"
 		entry = "build " + d.Wanted.SuggestedName + " (" + d.Wanted.SuggestedKind + ")"
 	default:
-		kind = "skill " + d.Scope + " (agent-dry skill)"
+		kind = "skill " + d.Scope + " (rice-agent skill)"
 		entry = rel(d.Entry)
 	}
 	var b strings.Builder

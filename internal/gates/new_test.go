@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/registry"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
 func fixedNow(t *testing.T) {
@@ -110,7 +110,7 @@ func TestNewGlobalGoPassesCheck(t *testing.T) {
 		t.Fatalf("check: exit %d, statuses %q\n%s", code, got, out)
 	}
 
-	// Without the agent-dry module there is nothing to build a Go tool in.
+	// Without the rice-agent module there is nothing to build a Go tool in.
 	bare := emptyRoot(t)
 	isolate(t, bare)
 	if code, _, _ := run(t, "new", "zz-go-bare", "--kind", "cli", "--scope", "global", "--task", "rice-kb:issues/04"); code != 3 {
@@ -445,7 +445,7 @@ func TestNewUsage(t *testing.T) {
 		}
 	}
 	code, out, _ := run(t, "new", "--help")
-	if code != 0 || !strings.HasPrefix(out, "Usage: agent-dry new") || !strings.Contains(out, advisoryHeading) || !strings.Contains(out, "--no-advisory") {
+	if code != 0 || !strings.HasPrefix(out, "Usage: rice-agent new") || !strings.Contains(out, advisoryHeading) || !strings.Contains(out, "--no-advisory") {
 		t.Errorf("--help: exit %d\n%s", code, out)
 	}
 }

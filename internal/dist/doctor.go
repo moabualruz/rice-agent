@@ -11,18 +11,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/manifest"
-	"github.com/moabualruz/agent-dry/internal/paths"
-	"github.com/moabualruz/agent-dry/internal/registry"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/manifest"
+	"github.com/moabualruz/rice-agent/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
-const doctorUsage = `Usage: agent-dry doctor [--json]
+const doctorUsage = `Usage: rice-agent doctor [--json]
 
-Report this host's agent-dry health: config presence and parse, root, prefix on PATH, every
+Report this host's rice-agent health: config presence and parse, root, prefix on PATH, every
 receipt link, tools the root installs that are not linked, commands that linked tools require,
 index cache freshness (state index.json versus manifests), go, jq and shellcheck availability, and
-zvec-grep (zg) presence and the semantic corpus index state (agent-dry index --semantic).
+zvec-grep (zg) presence and the semantic corpus index state (rice-agent index --semantic).
 Warnings (missing go or shellcheck, a missing or stale index that find rebuilds, no zg or no corpus
 index, which only turn semantic recall off) do not fail.
 
@@ -31,7 +31,7 @@ Options:
 
 Exit codes: 0 healthy (warnings allowed), 1 problems found, 2 usage.
 
-Example: agent-dry doctor
+Example: rice-agent doctor
 `
 
 // IndexFile is the index cache name inside the state directory.
@@ -132,7 +132,7 @@ func diagnose(getenv func(string) string) []Check {
 	prefix := defaultPrefix(getenv)
 	switch {
 	case errors.Is(rerr, fs.ErrNotExist):
-		add("FAIL", "install", "no receipt at %s; run agent-dry install", rpath)
+		add("FAIL", "install", "no receipt at %s; run rice-agent install", rpath)
 	case rerr != nil:
 		add("FAIL", "install", "%v", rerr)
 	default:
@@ -166,7 +166,7 @@ func diagnose(getenv func(string) string) []Check {
 			add("PASS", "links", "%d link(s) valid", len(receipt.Links))
 		}
 		if changed > 0 {
-			add("WARN", "links", "%d target(s) changed since install; re-run agent-dry install to refresh the receipt", changed)
+			add("WARN", "links", "%d target(s) changed since install; re-run rice-agent install to refresh the receipt", changed)
 		}
 	}
 
@@ -192,7 +192,7 @@ func diagnose(getenv func(string) string) []Check {
 			}
 		}
 		if len(missing) > 0 {
-			add("FAIL", "tools", "not linked: %s; run agent-dry install", strings.Join(missing, ", "))
+			add("FAIL", "tools", "not linked: %s; run rice-agent install", strings.Join(missing, ", "))
 		}
 		names := make([]string, 0, len(required))
 		for n := range required {
@@ -219,11 +219,11 @@ func diagnose(getenv func(string) string) []Check {
 		// find rebuilds a missing or stale cache itself; only an unreadable one breaks lookups.
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			add("WARN", "index", "no cache at %s yet; agent-dry find or index builds it", idx)
+			add("WARN", "index", "no cache at %s yet; rice-agent find or index builds it", idx)
 		case err != nil:
 			add("FAIL", "index", "unreadable cache: %v", err)
 		case newest.After(info.ModTime()):
-			add("WARN", "index", "%s is older than %s; the next find rebuilds it (or run agent-dry index --rebuild)", idx, newestPath)
+			add("WARN", "index", "%s is older than %s; the next find rebuilds it (or run rice-agent index --rebuild)", idx, newestPath)
 		default:
 			add("PASS", "index", "%s is fresh", idx)
 		}

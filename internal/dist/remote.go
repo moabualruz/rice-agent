@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
-	"github.com/moabualruz/agent-dry/internal/paths"
-	"github.com/moabualruz/agent-dry/internal/shellquote"
+	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/paths"
+	"github.com/moabualruz/rice-agent/internal/shellquote"
 )
 
 // remoteTarget is the platform of every remote host; tests point it at the local platform so the
@@ -56,15 +56,15 @@ func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string)
 	}
 	argv := append(append([]string{}, sshOptions...), h.SSH, remoteCommand)
 	if dryRun {
-		steps := []string{"build a " + remoteTarget.goos + "-" + remoteTarget.goarch + " bundle (agent-dry bundle)",
+		steps := []string{"build a " + remoteTarget.goos + "-" + remoteTarget.goarch + " bundle (rice-agent bundle)",
 			"stream a Bash script and the bundle on stdin to " + remoteCommand,
 			"verify size and sha256, extract into ~/.local/share/agent-dry/<version>/",
 			"point ~/.local/share/agent-dry/current at it",
 			"write ~/.config/agent-dry/config.json with root when absent",
-			"run ~/.local/share/agent-dry/current/bin/agent-dry " + strings.Join(installArgs, " ")}
+			"run ~/.local/share/agent-dry/current/bin/rice-agent " + strings.Join(installArgs, " ")}
 		if uninstall {
 			steps = []string{"stream a Bash script on stdin to " + remoteCommand,
-				"run ~/.local/share/agent-dry/current/bin/agent-dry " + strings.Join(installArgs, " ")}
+				"run ~/.local/share/agent-dry/current/bin/rice-agent " + strings.Join(installArgs, " ")}
 		}
 		plan := remotePlan{Host: host, SSH: h.SSH, Command: append([]string{"ssh"}, argv...),
 			Platform: remoteTarget.goos + "-" + remoteTarget.goarch, DryRun: true, Steps: steps}
@@ -102,7 +102,7 @@ func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string)
 			return cli.Envf(env, "install: %v", err)
 		}
 		defer f.Close()
-		fmt.Fprintf(env.Stderr, "agent-dry: install: sending bundle %s (%d bytes, sha256 %s) to %s\n", b.Version, b.Bytes, b.SHA256, host)
+		fmt.Fprintf(env.Stderr, "rice-agent: install: sending bundle %s (%d bytes, sha256 %s) to %s\n", b.Version, b.Bytes, b.SHA256, host)
 		stdin = io.MultiReader(strings.NewReader(remoteInstallScript(b, installArgs)), f)
 	}
 	cmd := exec.Command(ssh, argv...)
@@ -122,7 +122,7 @@ func runRemote(env *cli.Env, host string, dryRun, uninstall bool, prefix string)
 	default:
 		return cli.Envf(env, "install: run ssh: %v", err)
 	}
-	fmt.Fprintf(env.Stderr, "agent-dry: install: remote %s exited %d\n", host, status)
+	fmt.Fprintf(env.Stderr, "rice-agent: install: remote %s exited %d\n", host, status)
 	return status
 }
 
@@ -142,7 +142,7 @@ func remoteInstallScript(b *Bundle, installArgs []string) string {
   local sum=` + shellquote.POSIX(b.SHA256) + `
   local base="$HOME/.local/share/agent-dry"
   local dest="$base/$version"
-  case "$base" in *'"'*|*\\*) echo "agent-dry remote: unsupported HOME path" >&2; exit 3 ;; esac
+  case "$base" in *'"'*|*\\*) echo "rice-agent remote: unsupported HOME path" >&2; exit 3 ;; esac
   mkdir -p "$base"
   agent_dry_tmp="$(mktemp -d "$base/.install.XXXXXX")"
   trap 'rm -rf "$agent_dry_tmp"' EXIT
@@ -151,7 +151,7 @@ func remoteInstallScript(b *Bundle, installArgs []string) string {
   local got
   got="$(wc -c < "$tmp/bundle.tar.gz" | tr -d ' ')"
   if [ "$got" != "$size" ]; then
-    echo "agent-dry remote: payload truncated ($got of $size bytes)" >&2
+    echo "rice-agent remote: payload truncated ($got of $size bytes)" >&2
     exit 3
   fi
   local actual
@@ -162,13 +162,13 @@ func remoteInstallScript(b *Bundle, installArgs []string) string {
   fi
   actual="${actual%% *}"
   if [ "$actual" != "$sum" ]; then
-    echo "agent-dry remote: payload sha256 mismatch" >&2
+    echo "rice-agent remote: payload sha256 mismatch" >&2
     exit 3
   fi
   mkdir "$tmp/x"
   tar -xzf "$tmp/bundle.tar.gz" -C "$tmp/x"
-  if [ "$(cat "$tmp/x/VERSION")" != "$version" ] || [ ! -x "$tmp/x/bin/agent-dry" ]; then
-    echo "agent-dry remote: bundle layout check failed" >&2
+  if [ "$(cat "$tmp/x/VERSION")" != "$version" ] || [ ! -x "$tmp/x/bin/rice-agent" ]; then
+    echo "rice-agent remote: bundle layout check failed" >&2
     exit 3
   fi
   if [ -e "$dest" ]; then
@@ -176,7 +176,7 @@ func remoteInstallScript(b *Bundle, installArgs []string) string {
   fi
   mv "$tmp/x" "$dest"
   if [ -d "$base/current" ] && [ ! -L "$base/current" ]; then
-    echo "agent-dry remote: $base/current is a directory, not a symlink" >&2
+    echo "rice-agent remote: $base/current is a directory, not a symlink" >&2
     exit 3
   fi
   ln -sfn "$version" "$base/current"
@@ -184,11 +184,11 @@ func remoteInstallScript(b *Bundle, installArgs []string) string {
   if [ ! -e "$cfg" ]; then
     mkdir -p "$(dirname "$cfg")"
     printf '{\n  "root": "%s"\n}\n' "$base/current" > "$cfg"
-    echo "agent-dry remote: wrote $cfg" >&2
+    echo "rice-agent remote: wrote $cfg" >&2
   fi
-  echo "agent-dry remote: installed $version at $dest" >&2
+  echo "rice-agent remote: installed $version at $dest" >&2
   set +e
-  "$base/current/bin/agent-dry" ` + strings.Join(args, " ") + ` </dev/null
+  "$base/current/bin/rice-agent" ` + strings.Join(args, " ") + ` </dev/null
   return $?
 }
 agent_dry_remote_install; exit $?
@@ -202,9 +202,9 @@ func remoteUninstallScript(installArgs []string) string {
 		args[i] = shellquote.POSIX(a)
 	}
 	return `set -euo pipefail
-bin="$HOME/.local/share/agent-dry/current/bin/agent-dry"
+bin="$HOME/.local/share/agent-dry/current/bin/rice-agent"
 if [ ! -x "$bin" ]; then
-  echo "agent-dry remote: $bin is not installed" >&2
+  echo "rice-agent remote: $bin is not installed" >&2
   exit 3
 fi
 exec "$bin" ` + strings.Join(args, " ") + ` </dev/null

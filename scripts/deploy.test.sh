@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for scripts/deploy.sh. Run: bash scripts/deploy.test.sh (any Bash from 3.2 on).
-# Stubs on a fixture PATH stand in for pr-flow, go, host-run and the built agent-dry; git is a
+# Stubs on a fixture PATH stand in for pr-flow, go, host-run and the built rice-agent; git is a
 # logging wrapper over the real git, so archive, fetch and the clone script's fast-forward or
 # detach run against real fixture repositories. deploy.sh and the clone script run under the Bash
 # that runs this file. No network and no real host are used.
@@ -61,9 +61,9 @@ g init -q --bare "$tmp/origin.git"
 g --git-dir="$tmp/origin.git" symbolic-ref HEAD refs/heads/main
 g init -q "$dev"
 g -C "$dev" symbolic-ref HEAD refs/heads/main
-mkdir -p "$dev/cmd/agent-dry" "$dev/registry"
-printf 'module example.invalid/agent-dry\n' >"$dev/go.mod"
-printf 'package main\n' >"$dev/cmd/agent-dry/main.go"
+mkdir -p "$dev/cmd/rice-agent" "$dev/registry"
+printf 'module example.invalid/rice-agent\n' >"$dev/go.mod"
+printf 'package main\n' >"$dev/cmd/rice-agent/main.go"
 printf '{}\n' >"$dev/registry/wanted.json"
 printf '/bin/\n' >"$dev/.gitignore"
 g -C "$dev" add -A
@@ -144,9 +144,9 @@ cat >"$stub/go" <<'EOF'
 printf 'go %s (in %s)\n' "$*" "$PWD" >>"$STUB_LOG"
 if [ -n "${GOFLAGS+x}" ]; then echo "stub-go: GOFLAGS is set" >&2; exit 97; fi
 if [ "${CGO_ENABLED:-}" != 0 ]; then echo "stub-go: CGO_ENABLED is not 0" >&2; exit 96; fi
-if [ -n "${STUB_GO_FAIL:-}" ]; then echo "stub-go: ./cmd/agent-dry: compile error" >&2; exit 1; fi
+if [ -n "${STUB_GO_FAIL:-}" ]; then echo "stub-go: ./cmd/rice-agent: compile error" >&2; exit 1; fi
 if [ -e WORKTREE_ONLY ]; then echo "stub-go: building a working tree, not a clean export" >&2; exit 95; fi
-if [ ! -f cmd/agent-dry/main.go ]; then echo "stub-go: no ./cmd/agent-dry in $PWD" >&2; exit 94; fi
+if [ ! -f cmd/rice-agent/main.go ]; then echo "stub-go: no ./cmd/rice-agent in $PWD" >&2; exit 94; fi
 out="" ld=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -156,27 +156,27 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$ld" in
-  "-X github.com/moabualruz/agent-dry/internal/commands.Version="?*) ;;
+  "-X github.com/moabualruz/rice-agent/internal/commands.Version="?*) ;;
   *) echo "stub-go: unexpected -ldflags '$ld'" >&2; exit 93 ;;
 esac
 mkdir -p "$(dirname "$out")"
-sed "s/@VERSION@/${ld##*=}/" "$STUB_TPL/agent-dry" >"$out"
+sed "s/@VERSION@/${ld##*=}/" "$STUB_TPL/rice-agent" >"$out"
 chmod +x "$out"
 EOF
 
 # The binary stub go "builds": logs every call with its root and path.
-cat >"$tmp/tpl/agent-dry" <<'EOF'
+cat >"$tmp/tpl/rice-agent" <<'EOF'
 #!/usr/bin/env bash
-printf 'agent-dry %s root=%s exe=%s\n' "$*" "${AGENT_DRY_ROOT:-}" "$0" >>"$STUB_LOG"
+printf 'rice-agent %s root=%s exe=%s\n' "$*" "${AGENT_DRY_ROOT:-}" "$0" >>"$STUB_LOG"
 case "${1:-}" in
   version) echo "@VERSION@" ;;
   install)
     if [ "${2:-}" = --remote ]; then
       [ "$(cat "$AGENT_DRY_ROOT/VERSION")" = "@VERSION@" ] || { echo "fake: VERSION mismatch in root" >&2; exit 3; }
       case " ${STUB_BUNDLE_FAIL:-} " in
-        *" $3 "*) echo "agent-dry: install: remote $3 exited 255" >&2; exit 255 ;;
+        *" $3 "*) echo "rice-agent: install: remote $3 exited 255" >&2; exit 255 ;;
       esac
-      echo "agent-dry: install: remote $3 exited 0" >&2
+      echo "rice-agent: install: remote $3 exited 0" >&2
     else
       echo "installed 3 link(s)"
     fi
@@ -194,10 +194,10 @@ case "${1:-}" in
 esac
 EOF
 
-# agent-dry on PATH is the link install makes into the clone's bin.
-cat >"$stub/agent-dry" <<'EOF'
+# rice-agent on PATH is the link install makes into the clone's bin.
+cat >"$stub/rice-agent" <<'EOF'
 #!/usr/bin/env bash
-exec "$STUB_REPO/bin/agent-dry" "$@"
+exec "$STUB_REPO/bin/rice-agent" "$@"
 EOF
 
 cat >"$stub/host-run" <<'EOF'
@@ -229,10 +229,10 @@ if [ "$mode" = script ]; then
   exec "$STUB_BASH" "$file" "$@" </dev/null
 fi
 case "$*" in
-  "agent-dry version")
+  "rice-agent version")
     case " ${STUB_BADVERSION:-} " in *" $host "*) echo v0.0.1 ;; *) echo "$STUB_TAG" ;; esac
     ;;
-  "agent-dry doctor")
+  "rice-agent doctor")
     case " ${STUB_UNHEALTHY:-} " in
       *" $host "*) echo "FAIL install: no receipt"; echo "doctor: 1 problem(s)"; exit 1 ;;
     esac
@@ -322,18 +322,18 @@ expect_in "--skip-ci-check says so" err "CI not checked (--skip-ci-check)"
 # ---------- dry run ----------
 
 make_clone "$tmp/clone-pc" "$A"
-make_clone "$HOME/workspace/agent-dry" "$C"
+make_clone "$HOME/workspace/rice-agent" "$C"
 expect_exit "dry run exits 0" 0 deploy v9.9.9 --dry-run
 expect_in "dry run says nothing is contacted" out "no configured host is contacted"
-expect_in "dry run prints the clean export" out "+ git -C $dev archive $B | tar -x -C $tmp/t/agent-dry-deploy.XXXXXX/root"
-expect_in "dry run prints the VERSION file" out "+ printf '%s\n' v9.9.9 > $tmp/t/agent-dry-deploy.XXXXXX/root/VERSION"
-expect_in "dry run prints the build" out "&& env -u GOFLAGS CGO_ENABLED=0 go build -o $tmp/t/agent-dry-deploy.XXXXXX/root/bin/agent-dry -ldflags '-X github.com/moabualruz/agent-dry/internal/commands.Version=v9.9.9' ./cmd/agent-dry)"
-expect_in "dry run prints the local install" out "+ env AGENT_DRY_ROOT=$dev $dev/bin/agent-dry install"
-expect_in "dry run prints the bundle install" out "+ env AGENT_DRY_ROOT=$tmp/t/agent-dry-deploy.XXXXXX/root $tmp/t/agent-dry-deploy.XXXXXX/root/bin/agent-dry install --remote hz"
-expect_in "dry run prints the clone script call" out "+ host-run pc --timeout 1200 --script $tmp/t/agent-dry-deploy.XXXXXX/clone.sh -- v9.9.9 $B $tmp/clone-pc"
+expect_in "dry run prints the clean export" out "+ git -C $dev archive $B | tar -x -C $tmp/t/rice-agent-deploy.XXXXXX/root"
+expect_in "dry run prints the VERSION file" out "+ printf '%s\n' v9.9.9 > $tmp/t/rice-agent-deploy.XXXXXX/root/VERSION"
+expect_in "dry run prints the build" out "&& env -u GOFLAGS CGO_ENABLED=0 go build -o $tmp/t/rice-agent-deploy.XXXXXX/root/bin/rice-agent -ldflags '-X github.com/moabualruz/rice-agent/internal/commands.Version=v9.9.9' ./cmd/rice-agent)"
+expect_in "dry run prints the local install" out "+ env AGENT_DRY_ROOT=$dev $dev/bin/rice-agent install"
+expect_in "dry run prints the bundle install" out "+ env AGENT_DRY_ROOT=$tmp/t/rice-agent-deploy.XXXXXX/root $tmp/t/rice-agent-deploy.XXXXXX/root/bin/rice-agent install --remote hz"
+expect_in "dry run prints the clone script call" out "+ host-run pc --timeout 1200 --script $tmp/t/rice-agent-deploy.XXXXXX/clone.sh -- v9.9.9 $B $tmp/clone-pc"
 expect_in "dry run keeps the default clone root literal" out "-- v9.9.9 $B '~/workspace/agent-dry' github.com/moabualruz"
-expect_in "dry run prints the remote verification" out "+ host-run hz --timeout 120 -- agent-dry doctor"
-expect_in "dry run prints the local verification" out "+ agent-dry version"
+expect_in "dry run prints the remote verification" out "+ host-run hz --timeout 120 -- rice-agent doctor"
+expect_in "dry run prints the local verification" out "+ rice-agent version"
 expect_in "dry run notes the skipped host" out "bare: skipped: no hosts.bare.install"
 expect_line "dry run summary: local planned" out '^  planned +local +local '
 expect_line "dry run summary: hz planned" out '^  planned +hz +bundle '
@@ -341,9 +341,9 @@ expect_line "dry run summary: bare skipped" out '^  skipped +bare +skip '
 log
 expect_no_line "dry run builds nothing" log '^go '
 expect_no_line "dry run contacts no host" log '^host-run '
-expect_no_line "dry run runs no agent-dry" log '^agent-dry '
+expect_no_line "dry run runs no rice-agent" log '^rice-agent '
 expect_no_line "dry run exports nothing" log ' archive '
-if [ ! -e "$dev/bin/agent-dry" ]; then pass "dry run writes no binary"; else fail "dry run wrote $dev/bin/agent-dry"; fi
+if [ ! -e "$dev/bin/rice-agent" ]; then pass "dry run writes no binary"; else fail "dry run wrote $dev/bin/rice-agent"; fi
 expect_eq "dry run leaves the clone alone" "$(head_of "$tmp/clone-pc")" "$A"
 
 # ---------- one failing host, the others continue ----------
@@ -351,26 +351,26 @@ expect_eq "dry run leaves the clone alone" "$(head_of "$tmp/clone-pc")" "$A"
 STUB_BUNDLE_FAIL=hz expect_exit "a failed host exits 1 after the others" 1 deploy v9.9.9
 log
 expect_line "summary: local ok" out '^  ok +local +local +version v9\.9\.9, doctor healthy$'
-expect_line "summary: hz FAIL" out '^  FAIL +hz +bundle +agent-dry install --remote hz exited 255$'
+expect_line "summary: hz FAIL" out '^  FAIL +hz +bundle +rice-agent install --remote hz exited 255$'
 expect_line "summary: pc ok and fast-forwarded" out "^  ok +pc +clone +version v9\\.9\\.9, doctor healthy; main fast-forwarded ${A:0:7}\\.\\.${B:0:7} to v9\\.9\\.9$"
 expect_line "summary: dflt ok and detached" out '^  ok +dflt +clone +version v9\.9\.9, doctor healthy; detached at v9\.9\.9 \(main cannot fast-forward to it\)$'
 expect_line "summary: bare skipped" out '^  skipped +bare +skip +skipped: no hosts\.bare\.install$'
-expect_in "the failure is reported as it happens" err "hz: FAIL: agent-dry install --remote hz exited 255; continuing with the other hosts"
+expect_in "the failure is reported as it happens" err "hz: FAIL: rice-agent install --remote hz exited 255; continuing with the other hosts"
 if awk '/install --remote hz/ { h = NR } /^host-run pc --timeout 1200 --script/ { p = NR } END { exit !(h && p && h < p) }' "$tmp/log"; then
   pass "pc is deployed after hz failed"
 else
   fail "pc was not deployed after hz failed"
 fi
-expect_line "the local install runs the copied binary with the clone as root" log "^agent-dry install root=$dev exe=$dev/bin/agent-dry$"
-expect_line "the bundle install runs from the temporary root" log "^agent-dry install --remote hz root=$tmp/t/agent-dry-deploy\\.[A-Za-z0-9]+/root exe=$tmp/t/agent-dry-deploy\\.[A-Za-z0-9]+/root/bin/agent-dry$"
-expect_line "the build ran in the clean export" log "^go build -o $tmp/t/agent-dry-deploy\\.[A-Za-z0-9]+/root/bin/agent-dry .* \\(in $tmp/t/agent-dry-deploy\\.[A-Za-z0-9]+/root\\)$"
-expect_eq "the local binary reports the tag" "$("$dev/bin/agent-dry" version)" v9.9.9
+expect_line "the local install runs the copied binary with the clone as root" log "^rice-agent install root=$dev exe=$dev/bin/rice-agent$"
+expect_line "the bundle install runs from the temporary root" log "^rice-agent install --remote hz root=$tmp/t/rice-agent-deploy\\.[A-Za-z0-9]+/root exe=$tmp/t/rice-agent-deploy\\.[A-Za-z0-9]+/root/bin/rice-agent$"
+expect_line "the build ran in the clean export" log "^go build -o $tmp/t/rice-agent-deploy\\.[A-Za-z0-9]+/root/bin/rice-agent .* \\(in $tmp/t/rice-agent-deploy\\.[A-Za-z0-9]+/root\\)$"
+expect_eq "the local binary reports the tag" "$("$dev/bin/rice-agent" version)" v9.9.9
 expect_eq "pc main is at the tag" "$(branch_of "$tmp/clone-pc") $(head_of "$tmp/clone-pc")" "main $B"
-expect_eq "dflt is detached at the tag" "$(branch_of "$HOME/workspace/agent-dry") $(head_of "$HOME/workspace/agent-dry")" "detached $B"
-expect_eq "dflt main is untouched" "$(g -C "$HOME/workspace/agent-dry" rev-parse refs/heads/main)" "$C"
-expect_eq "the clone build reports the tag" "$("$tmp/clone-pc/bin/agent-dry" version)" v9.9.9
-expect_line "the clone install uses the clone as root" log "^agent-dry install root=$tmp/clone-pc exe=bin/agent-dry$"
-leftover=$(find "$tmp/t" -maxdepth 1 -name 'agent-dry-deploy.*' | wc -l | tr -d ' ')
+expect_eq "dflt is detached at the tag" "$(branch_of "$HOME/workspace/rice-agent") $(head_of "$HOME/workspace/rice-agent")" "detached $B"
+expect_eq "dflt main is untouched" "$(g -C "$HOME/workspace/rice-agent" rev-parse refs/heads/main)" "$C"
+expect_eq "the clone build reports the tag" "$("$tmp/clone-pc/bin/rice-agent" version)" v9.9.9
+expect_line "the clone install uses the clone as root" log "^rice-agent install root=$tmp/clone-pc exe=bin/rice-agent$"
+leftover=$(find "$tmp/t" -maxdepth 1 -name 'rice-agent-deploy.*' | wc -l | tr -d ' ')
 expect_eq "the temporary root is removed" "$leftover" 0
 
 expect_exit "a second deploy to a current clone exits 0" 0 deploy v9.9.9 --host pc
@@ -399,11 +399,11 @@ expect_line "summary: unreachable pc" out '^  FAIL +pc +clone +clone script exit
 # ---------- --host filtering ----------
 
 make_clone "$tmp/clone-pc" "$A"
-rm -f "$dev/bin/agent-dry"
+rm -f "$dev/bin/rice-agent"
 expect_exit "--host pc --host local deploys only those" 0 deploy v9.9.9 --host pc --host local
 log
 expect_line "--host: pc deployed" log '^host-run pc --timeout 1200 --script '
-expect_line "--host: local deployed" log "^agent-dry install root=$dev "
+expect_line "--host: local deployed" log "^rice-agent install root=$dev "
 expect_no_line "--host: hz not deployed" log 'remote hz|^host-run hz '
 expect_no_line "--host: dflt not deployed" log '^host-run dflt '
 summary=$(sed -n '/summary for v9.9.9/,$p' "$tmp/out" | sed -n '2,$p' | awk '{ print $2 }' | tr '\n' ' ')
@@ -423,7 +423,7 @@ STUB_UNHEALTHY=hz expect_exit "an unhealthy doctor fails the host" 1 deploy v9.9
 expect_line "summary: unhealthy hz" out '^  FAIL +hz +bundle +version v9\.9\.9, but doctor: doctor: 1 problem\(s\) \(exit 1\)$'
 expect_in "the doctor FAIL lines are shown" out "    FAIL install: no receipt"
 STUB_BADVERSION=hz expect_exit "a wrong remote version fails the host" 1 deploy v9.9.9 --host hz
-expect_in "the wrong version is named" out "agent-dry version is 'v0.0.1', want v9.9.9"
+expect_in "the wrong version is named" out "rice-agent version is 'v0.0.1', want v9.9.9"
 STUB_LOCAL_UNHEALTHY=1 expect_exit "an unhealthy local doctor fails" 1 deploy v9.9.9 --host local
 expect_line "summary: unhealthy local" out '^  FAIL +local +local +version v9\.9\.9, but doctor'
 
@@ -434,7 +434,7 @@ expect_in "the build failure is reported" err "build failed: go build exited 1"
 expect_in "the build output tail is shown" err "compile error"
 log
 expect_no_line "a build failure contacts no host" log '^host-run '
-expect_no_line "a build failure installs nothing" log '^agent-dry install'
+expect_no_line "a build failure installs nothing" log '^rice-agent install'
 
 if [ "$fails" -eq 0 ]; then
   echo "all deploy.sh tests passed"

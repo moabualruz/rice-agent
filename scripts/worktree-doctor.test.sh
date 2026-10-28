@@ -21,7 +21,7 @@ make_checkout() {
 
 ready="$root/ready"
 make_checkout "$ready"
-printf 'module example.invalid/agent-dry\n\ngo 1.27\n' >"$ready/go.mod"
+printf 'module example.invalid/rice-agent\n\ngo 1.27\n' >"$ready/go.mod"
 printf 'check:\n\t@true\n' >"$ready/justfile"
 output=$(cd "$ready" && PATH="$fake_bin:$PATH" NVM_DIR="$nvm_dir" bash .githooks/pre-push)
 [[ "$output" == "worktree-doctor: checkout and gate prerequisites are ready" ]]

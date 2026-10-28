@@ -1,8 +1,8 @@
 # DRY guide
 
 The always-on `DRY_POLICY` section in the global agent instructions is the summary. This guide is the
-detail it links to (`agent-dry guide`; the tool contract is `agent-dry guide tools`). Full design:
-`rice-kb:docs/specs/agent-dry.md`.
+detail it links to (`rice-agent guide`; the tool contract is `rice-agent guide tools`). Full design:
+`rice-kb:docs/specs/rice-agent.md`.
 
 ## The rule
 
@@ -13,27 +13,27 @@ step, because the lookup already records what it could not find.
 
 ## Product work
 
-The same principles apply to product code in every project, not only to tools. Think first: write down the goal, the assumptions and how success will be checked before editing, and ask when the request is ambiguous. Research first, locally and online: search this project's code with zvec-grep for an existing module, the owner's tools with `agent-dry find`, and the web for proven libraries, services and primary documentation (`agent-dry guide scout`, `oss-evidence`). Then rethink: compare the findings with the plan, change the plan when they show a better or existing solution, and say what changed. Adopt or adapt before writing new code. Keep the code DRY: extend existing modules, keep one source of truth for each rule, constant and schema, and share across projects through libraries or `agent-dry vendor`. Change surgically and verify with diagnostics, build and tests (`agent-dry guide surgeon`).
+The same principles apply to product code in every project, not only to tools. Think first: write down the goal, the assumptions and how success will be checked before editing, and ask when the request is ambiguous. Research first, locally and online: search this project's code with zvec-grep for an existing module, the owner's tools with `rice-agent find`, and the web for proven libraries, services and primary documentation (`rice-agent guide scout`, `oss-evidence`). Then rethink: compare the findings with the plan, change the plan when they show a better or existing solution, and say what changed. Adopt or adapt before writing new code. Keep the code DRY: extend existing modules, keep one source of truth for each rule, constant and schema, and share across projects through libraries or `rice-agent vendor`. Change surgically and verify with diagnostics, build and tests (`rice-agent guide surgeon`).
 
 ## Work
 
 ### 1. Find
 
 ```
-agent-dry find <intent words>
+rice-agent find <intent words>
 ```
 
 Run it before a multi-step unit of work and again before each new procedure inside it (a remote
 change, a PR landing, a data transform, a sweep over repositories). Phrase the intent the way you
-would describe the job: `agent-dry find watch pr checks`, `agent-dry find ssh to mkh-pc run script`.
+would describe the job: `rice-agent find watch pr checks`, `rice-agent find ssh to mkh-pc run script`.
 
-It searches agent-dry tools, the current project's justfile recipes, package scripts, Makefile
+It searches rice-agent tools, the current project's justfile recipes, package scripts, Makefile
 targets and `scripts/`, installed skills, recurring families that still lack a tool, and earlier
 misses. Read the result:
 
 | Line | Meaning | Action |
 | --- | --- | --- |
-| `name  summary  [kind scope] entry` | an existing tool or project command | use it; `agent-dry show <name>` for flags |
+| `name  summary  [kind scope] entry` | an existing tool or project command | use it; `rice-agent show <name>` for flags |
 | `WANTED <family>: build <name> before use` | known recurring work with no tool yet | build it first (trigger T2) |
 | `SEEN <date> <project>: earlier miss` | this work was done inline before | build it first (trigger T2) |
 | no output, exit 1 | nothing known | decide below; the miss is now recorded |
@@ -69,10 +69,10 @@ than writing a second tool: keep its tests green and add one for the new case.
 ### 4. Build
 
 ```
-agent-dry new <name> --kind script --scope global --task <ticket or request> --summary "Use when ..." --intent "..."
+rice-agent new <name> --kind script --scope global --task <ticket or request> --summary "Use when ..." --intent "..."
 # implement the smallest tool that serves the current task, parameters instead of constants
-agent-dry check <name>
-agent-dry install
+rice-agent check <name>
+rice-agent install
 ```
 
 `new` runs the duplicate check first and refuses when a similar tool exists (use `--extends` or
@@ -84,8 +84,8 @@ the work that triggered it. New tools start in `trial`; the audit promotes them 
 | What | Home |
 | --- | --- |
 | logic about one repository's code, build or data | that repository's `scripts/` or justfile, in its own language (`--scope project`) |
-| generic or cross-project logic: owner infrastructure, forge lifecycle, harness operations, policy checks, fleet sweeps | an agent-dry tool (`--scope global`) |
-| judgment no script can encode | a short agent-dry skill whose deterministic steps call tools |
+| generic or cross-project logic: owner infrastructure, forge lifecycle, harness operations, policy checks, fleet sweeps | an rice-agent tool (`--scope global`) |
+| judgment no script can encode | a short rice-agent skill whose deterministic steps call tools |
 | a rule every agent must always know | the global instructions (rare) |
 
 Bash for thin compositions of CLIs, Go for structured, concurrent or long-lived tools, TypeScript only
@@ -108,12 +108,12 @@ where the consumer already uses it, never Python.
 
 - Search the codebase before writing a helper, constant, type or schema, with zvec-grep (`zg query`
   or its MCP tools for concepts, `zg query --rg` or `rg` for exact names); extend what exists.
-  agent-dry never indexes project code: zvec-grep owns code search, agent-dry only its registry.
+  rice-agent never indexes project code: zvec-grep owns code search, rice-agent only its registry.
 - Keep one source of truth for every rule, constant, schema and procedure. Generate derived copies
   instead of hand-copying them, and point documents at the owner instead of restating it.
 - DRY is about knowledge, not similar-looking text. Two lines that encode different facts stay
   separate; extract when the second real use shares the same meaning.
-- Across repositories, share through a library, a pinned dependency or a vendored agent-dry release,
+- Across repositories, share through a library, a pinned dependency or a vendored rice-agent release,
   never a pasted copy. A diverged copy is a defect: reconcile it to one canonical version.
 - When consolidating duplicates, the original callers' tests are the regression bar.
 
@@ -122,12 +122,12 @@ where the consumer already uses it, never Python.
 A repository that needs a tool inside its own tree (a CI gate, a pre-commit hook) vendors it:
 
 ```
-agent-dry vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
-agent-dry vendor --check <repo>
+rice-agent vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
+rice-agent vendor --check <repo>
 ```
 
-The repository gains `.agent-dry/vendor.json` (source, ref, files) and `.agent-dry/SHA256SUMS`, which
-`sha256sum -c` or `shasum -a 256 -c` verifies from the repository root without agent-dry installed.
+The repository gains `.rice-agent/vendor.json` (source, ref, files) and `.rice-agent/SHA256SUMS`, which
+`sha256sum -c` or `shasum -a 256 -c` verifies from the repository root without rice-agent installed.
 `vendor --check` reports integrity failures and copies that are behind the canonical tool.
 
 ## Lifecycle
@@ -139,6 +139,6 @@ The repository gains `.agent-dry/vendor.json` (source, ref, files) and `.agent-d
 
 ## Measurement
 
-`agent-dry audit --since 14d` reports the lookup-first rate, inline reimplementations of registered
+`rice-agent audit --since 14d` reports the lookup-first rate, inline reimplementations of registered
 tools, PR lifecycle commands per merge, raw SSH and hand-built OpenBao logins, diverged copies across
 repositories, and tools to promote or retire. It measures; it never writes tools.

@@ -6,7 +6,7 @@ candidate and a published decision, never in code.
 
 ## When
 
-- `agent-dry find` has no match and the work would add a new capability (not a thin composition of
+- `rice-agent find` has no match and the work would add a new capability (not a thin composition of
   CLIs you already have).
 - A tool, dependency or service is about to be introduced, replaced or upgraded across projects.
 
@@ -15,7 +15,7 @@ candidate and a published decision, never in code.
 1. State the capability in one sentence and the hard constraints: target platforms, language and
    runtime limits (no Python runtime for non-Python projects), local-first, license allowlist,
    offline use, maintenance budget.
-2. Check what the owner already runs first: `agent-dry find`, the global exceptions (zvec-grep,
+2. Check what the owner already runs first: `rice-agent find`, the global exceptions (zvec-grep,
    herdr), owner products such as rice-edit and Rice Observe, and installed CLIs (`command -v`).
    Reuse one of those before looking outside. Then collect candidates from primary sources:
    `gh search repos <terms> --sort stars`, awesome lists (seeds only) and upstream documentation.
@@ -36,7 +36,7 @@ candidate and a published decision, never in code.
    vetoed or fails the representative task, and say why.
 8. Publish the evidence and verdict as a Rice research or decision document (the `rice-research`
    skill), then integrate: an external entry in `registry/providers.json` for a CLI, a pinned
-   dependency for a library, or an agent-dry tool only for a thin composition.
+   dependency for a library, or an rice-agent tool only for a thin composition.
 
 ## Output
 

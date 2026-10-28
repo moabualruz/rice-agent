@@ -1,6 +1,6 @@
-// Package dist installs agent-dry onto a host, vendors tools into repositories with drift checks,
-// builds release bundles and installs managed instruction sections.
-// It registers the install, doctor, vendor, bundle and section commands.
+// Package dist installs Rice Agent onto a host, vendors tools into repositories with drift checks,
+// builds release bundles and writes instruction outputs.
+// It registers the install, doctor, vendor, bundle, section and instruction commands.
 //
 // Interface used by other packages (keep signatures stable):
 //
@@ -20,15 +20,16 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
 func init() {
-	cli.Register(cli.Command{Name: "install", Summary: "link agent-dry and global tools onto PATH, here or on a configured host", Run: runInstall})
+	cli.Register(cli.Command{Name: "install", Summary: "link rice-agent and global tools onto PATH, here or on a configured host", Run: runInstall})
 	cli.Register(cli.Command{Name: "doctor", Summary: "report config, root, PATH, install links, index freshness and toolchain", Run: runDoctor})
 	cli.Register(cli.Command{Name: "vendor", Summary: "copy a tool into a repository with checksums, or check copies for drift", Run: runVendor})
-	cli.Register(cli.Command{Name: "bundle", Summary: "cross-compile agent-dry and pack a release tarball", Run: runBundle})
+	cli.Register(cli.Command{Name: "bundle", Summary: "cross-compile rice-agent and pack a release tarball", Run: runBundle})
 	cli.Register(cli.Command{Name: "section", Summary: "install or check a managed section in every harness instruction file", Run: runSection})
+	cli.Register(cli.Command{Name: "instruction", Summary: "render the shared instruction sources into compiled outputs", Run: runInstruction})
 }
 
 // The dash glyphs are built from byte escapes so no source file contains them.
@@ -58,7 +59,7 @@ func parseArgs(env *cli.Env, fs *flag.FlagSet, usage string) (pos []string, code
 				fmt.Fprint(env.Stdout, usage)
 				return nil, cli.ExitOK, false
 			}
-			return nil, cli.Usagef(env, "%s: %v; run agent-dry %s --help", fs.Name(), err, fs.Name()), false
+			return nil, cli.Usagef(env, "%s: %v; run rice-agent %s --help", fs.Name(), err, fs.Name()), false
 		}
 		rest := fs.Args()
 		if len(rest) == 0 {

@@ -183,14 +183,14 @@
         "keep pinned versions current",
         "automated dependency update pull requests",
         "bump vendored release versions",
-        "update agent-dry vendored releases"
+        "update rice-agent vendored releases"
       ],
       "command": "renovate",
       "owner": "upstream:https://github.com/renovatebot/renovate",
       "license": "AGPL-3.0-only",
       "install": "npm install -g renovate",
       "homepage": "https://docs.renovatebot.com",
-      "notes": "Self-hosted: run it as a scheduled job or service, not per edit. It also keeps vendored agent-dry releases current in consuming repositories."
+      "notes": "Self-hosted: run it as a scheduled job or service, not per edit. It also keeps vendored rice-agent releases current in consuming repositories."
     },
     {
       "name": "shellcheck",

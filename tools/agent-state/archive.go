@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/shellquote"
+	"github.com/moabualruz/rice-agent/internal/shellquote"
 )
 
 type resticSnapshot struct {

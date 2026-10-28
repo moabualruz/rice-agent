@@ -84,7 +84,7 @@ func TestBundleLinuxAmd64(t *testing.T) {
 	gitRun(t, root, "add", "-A")
 	gitRun(t, root, "commit", "-q", "-m", "fixture")
 	gitRun(t, root, "tag", "v0.0.0-fixture")
-	out := filepath.Join(tempDir(t), "out", "agent-dry.tar.gz")
+	out := filepath.Join(tempDir(t), "out", "rice-agent.tar.gz")
 	vars := map[string]string{"HOME": tempDir(t), "AGENT_DRY_ROOT": root, "PATH": os.Getenv("PATH")}
 
 	code, stdout, errb := run(t, vars, "bundle", "--goos", "linux", "--goarch", "amd64", "--out", out)
@@ -103,9 +103,9 @@ func TestBundleLinuxAmd64(t *testing.T) {
 	if string(files["VERSION"]) != "v0.0.0-fixture\n" {
 		t.Fatalf("VERSION: %q", files["VERSION"])
 	}
-	bin := files["bin/agent-dry"]
-	if !bytes.HasPrefix(bin, []byte("\x7fELF")) || modes["bin/agent-dry"] != 0o755 {
-		t.Fatalf("bin/agent-dry is not a linux executable (mode %o)", modes["bin/agent-dry"])
+	bin := files["bin/rice-agent"]
+	if !bytes.HasPrefix(bin, []byte("\x7fELF")) || modes["bin/rice-agent"] != 0o755 {
+		t.Fatalf("bin/rice-agent is not a linux executable (mode %o)", modes["bin/rice-agent"])
 	}
 	if !bytes.Contains(bin, []byte("v0.0.0-fixture")) {
 		t.Fatal("version ldflag not stamped into the binary")
@@ -140,8 +140,8 @@ func TestBundleHostBinaryReportsVersion(t *testing.T) {
 		t.Fatalf("bundle: %s", errb)
 	}
 	files, _ := readTarball(t, out)
-	exe := filepath.Join(tempDir(t), "agent-dry")
-	writeFile(t, exe, string(files["bin/agent-dry"]), 0o755)
+	exe := filepath.Join(tempDir(t), "rice-agent")
+	writeFile(t, exe, string(files["bin/rice-agent"]), 0o755)
 	got, err := exec.Command(exe, "version").Output()
 	// Outside a Git checkout the version is the running build's, sanitized for a directory name.
 	if err != nil || strings.TrimSpace(string(got)) != sanitizeVersion(rootVersionForTest(root)) {

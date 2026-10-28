@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/internal/registry"
+	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
 // Each fixture under testdata/gates/root/tools fails exactly one gate (or none), and a failed
@@ -273,7 +273,7 @@ func TestCheckUsageAndEnvironment(t *testing.T) {
 		}
 	}
 	code, out, _ := run(t, "check", "--help")
-	if code != 0 || !strings.HasPrefix(out, "Usage: agent-dry check") {
+	if code != 0 || !strings.HasPrefix(out, "Usage: rice-agent check") {
 		t.Errorf("--help: exit %d\n%s", code, out)
 	}
 	code, out, _ = run(t, "check", "no-such-tool")

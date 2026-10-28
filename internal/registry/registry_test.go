@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moabualruz/agent-dry/docs"
-	"github.com/moabualruz/agent-dry/internal/cli"
+	"github.com/moabualruz/rice-agent/docs"
+	"github.com/moabualruz/rice-agent/internal/cli"
 )
 
 var fixtures = mustAbs(filepath.Join("..", "..", "testdata", "registry"))
@@ -505,14 +505,14 @@ func TestFindUsageAndEnvErrors(t *testing.T) {
 	}
 	for _, c := range []string{"find", "show", "index", "guide"} {
 		code, out, _ := run(t, getenv, c, "--help")
-		if code != 0 || !strings.HasPrefix(out, "Usage: agent-dry "+c) {
+		if code != 0 || !strings.HasPrefix(out, "Usage: rice-agent "+c) {
 			t.Errorf("%s --help: exit %d %q", c, code, out)
 		}
 	}
 
 	noRoot := testEnv(t, map[string]string{"AGENT_DRY_ROOT": t.TempDir()})
 	for _, a := range [][]string{{"find", "x"}, {"show", "x"}, {"index"}} {
-		if code, _, errOut := run(t, noRoot, a...); code != cli.ExitEnv || !strings.Contains(errOut, "not an agent-dry root") {
+		if code, _, errOut := run(t, noRoot, a...); code != cli.ExitEnv || !strings.Contains(errOut, "not an rice-agent root") {
 			t.Errorf("%v without root: exit %d %q", a, code, errOut)
 		}
 	}
@@ -540,7 +540,7 @@ func TestShow(t *testing.T) {
 		name string
 		want []string
 	}{
-		{"check-no-dashes", []string{"agent-dry tool, status trial", "side effects: read", "dry run:      none",
+		{"check-no-dashes", []string{"rice-agent tool, status trial", "side effects: read", "dry run:      none",
 			"exit codes:   0 no dash found; 1 a dash was found; 2 usage error", "test:         bash test.sh", "Usage: check-no-dashes"}},
 		{"host-run", []string{"dry run:      --dry-run", "requires:     ssh", "config:       hosts", "3 host unreachable"}},
 		{"old-scan", []string{"status retired", "superseded by: check-no-dashes"}},
