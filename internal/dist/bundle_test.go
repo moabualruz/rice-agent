@@ -168,7 +168,7 @@ func TestBundleNeedsSourceCheckout(t *testing.T) {
 func TestBundleBuildFailureIsNegative(t *testing.T) {
 	requireCommands(t, "go")
 	root := fixtureModule(t)
-	writeFile(t, filepath.Join(root, "cmd", "agent-dry", "broken.go"), "package main\n\nfunc broken() { undefined() }\n", 0o644)
+	writeFile(t, filepath.Join(root, "cmd", "rice-agent", "broken.go"), "package main\n\nfunc broken() { undefined() }\n", 0o644)
 	vars := map[string]string{"HOME": tempDir(t), "AGENT_DRY_ROOT": root, "PATH": os.Getenv("PATH")}
 	out := filepath.Join(tempDir(t), "x.tar.gz")
 	if code, _, errb := run(t, vars, "bundle", "--out", out); code != 1 || !strings.Contains(errb, "go build for linux-amd64 failed") || exists(out) {

@@ -31,7 +31,7 @@ var hermesLookPath = exec.LookPath
 const usageText = `Usage: rice-agent audit [--since 14d] [--transcripts <dir>] [--max-files N] [--json]
 
 Measure lookup, reuse and re-typing (spec section 10) from Claude Code, Codex and Hermes sessions,
-the find miss log and the tool manifests, against the recorded baselines. Reports agent-dry
+the find miss log and the tool manifests, against the recorded baselines. Reports Rice Agent
 find/new/check/guide counts by day, host and harness, failing tool tests and 60-day inactivity. A
 trial tool with successful use in two distinct sessions and a passing test is promoted to active.
 Prints counts, tool names, configured host names and miss tokens only; never command text.

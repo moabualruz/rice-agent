@@ -15,7 +15,7 @@ const (
 
 var (
 	// findRe is a registry lookup.
-	findRe = regexp.MustCompile(pathStart + `agent-dry\s+find` + argEnd)
+	findRe = regexp.MustCompile(pathStart + `(?:rice-agent|agent-dry)\s+find` + argEnd)
 
 	// mutateBashRe is the conservative set of mutating shell commands (metric 1). A redirect into a
 	// tracked path is not detectable from command text, so it is not counted.

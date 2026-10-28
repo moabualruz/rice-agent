@@ -314,7 +314,7 @@ func TestInstallPrunesLinksTheRootNoLongerInstalls(t *testing.T) {
 
 func TestInstallFallsBackToRunningExecutable(t *testing.T) {
 	f := newInstallFixture(t)
-	if err := os.Remove(filepath.Join(f.root, "bin", "agent-dry")); err != nil {
+	if err := os.Remove(filepath.Join(f.root, "bin", "rice-agent")); err != nil {
 		t.Fatal(err)
 	}
 	exe := filepath.Join(f.home, "built", "agent-dry")
@@ -328,7 +328,7 @@ func TestInstallFallsBackToRunningExecutable(t *testing.T) {
 	}
 	for _, l := range decodeReceipt(t, out).Links {
 		if l.Name == "agent-dry" && l.Target != exe {
-			t.Fatalf("rice-agent target %s, want %s", l.Target, exe)
+			t.Fatalf("agent-dry target %s, want %s", l.Target, exe)
 		}
 	}
 	// The recorded target is ours even though it is outside the root: reinstall and uninstall own it.

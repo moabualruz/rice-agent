@@ -596,6 +596,14 @@ func TestHermesUnknownToolResultFailsClosed(t *testing.T) {
 	}
 }
 
+func TestFindPatternSupportsRiceAgentAndLegacyAlias(t *testing.T) {
+	for _, command := range []string{"rice-agent find issue", "agent-dry find issue"} {
+		if !findRe.MatchString(command) {
+			t.Errorf("find pattern did not match %q", command)
+		}
+	}
+}
+
 func TestPatterns(t *testing.T) {
 	mut := map[string]bool{
 		"git commit -m x":              true,
