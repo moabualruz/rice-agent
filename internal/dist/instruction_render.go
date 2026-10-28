@@ -14,19 +14,27 @@ import (
 	"github.com/moabualruz/rice-agent/internal/paths"
 )
 
-const instructionUsage = `Usage: rice-agent instruction render --source <agent-instructions> --output <new-directory>
+const instructionUsage = `Usage: rice-agent instruction render --source <agent-instructions> --output <new-directory> [catalog options]
+       rice-agent instruction check --catalog-export <file>
 
 Render the source instruction layout into <output>/compiled. The output directory must not exist.
+A Catalog resolve result and packet can be bundled into the output for deterministic offline use.
 This command only renders derived files; it does not update instruction sources, install links, or
-change harness configuration.
+change harness configuration. Use --source alone as the offline source-tree fallback.
 
 Options:
-  --source <dir>  source root (for example ~/.config/agent-instructions)
-  --output <dir>  new output root; compiled files are written below it
+  --source <dir>            source root (for example ~/.config/agent-instructions)
+  --output <dir>            new output root; compiled files are written below it
+  --catalog-result <file>   complete rice-catalog resolve result JSON
+  --catalog-packet <file>   matching catalog/context-packet/v1 JSON
+  --catalog-export <file>   pinned local Rice Agent export from an earlier render
 
-Exit codes: 0 rendered, 1 refused, 2 usage, 3 environment.
+Exit codes: 0 rendered or valid, 1 refused, 2 usage, 3 environment.
 
-Example: rice-agent instruction render --source ~/.config/agent-instructions --output ./rendered-instructions
+Examples:
+  rice-agent instruction render --source ~/.config/agent-instructions --output ./rendered-instructions
+  rice-agent instruction render --source ~/.config/agent-instructions --catalog-result ./resolve.json --catalog-packet ./packet.json --output ./rendered-instructions
+  rice-agent instruction check --catalog-export ./rendered-instructions/compiled/catalog-export.json
 `
 
 func runInstruction(env *cli.Env) int {
@@ -34,12 +42,18 @@ func runInstruction(env *cli.Env) int {
 		fmt.Fprint(env.Stdout, instructionUsage)
 		return cli.ExitOK
 	}
+	if env.Args[0] == "check" {
+		return runInstructionCheck(env)
+	}
 	if env.Args[0] != "render" {
 		return cli.Usagef(env, "instruction: unknown subcommand %q; run rice-agent instruction --help", env.Args[0])
 	}
 	fs := flag.NewFlagSet("instruction render", flag.ContinueOnError)
 	source := fs.String("source", "", "")
 	output := fs.String("output", "", "")
+	catalogResult := fs.String("catalog-result", "", "")
+	catalogPacket := fs.String("catalog-packet", "", "")
+	catalogExportPath := fs.String("catalog-export", "", "")
 	sub := *env
 	sub.Args = env.Args[1:]
 	pos, code, ok := parseArgs(&sub, fs, instructionUsage)
@@ -52,6 +66,14 @@ func runInstruction(env *cli.Env) int {
 	if *source == "" || *output == "" {
 		return cli.Usagef(env, "instruction render: --source and --output are required")
 	}
+	catalogPair := *catalogResult != "" || *catalogPacket != ""
+	if catalogPair && (*catalogResult == "" || *catalogPacket == "") {
+		return cli.Usagef(env, "instruction render: --catalog-result and --catalog-packet must be used together")
+	}
+	if catalogPair && *catalogExportPath != "" {
+		return cli.Usagef(env, "instruction render: use either --catalog-export or the Catalog result and packet pair")
+	}
+
 	home := paths.Home(env.Getenv)
 	sourcePath, err := absPath(*source, home)
 	if err != nil {
@@ -65,6 +87,29 @@ func runInstruction(env *cli.Env) int {
 	if err != nil {
 		return cli.Envf(env, "instruction render: %v", err)
 	}
+	if catalogPair || *catalogExportPath != "" {
+		export, err := readInstructionCatalogExport(home, *catalogResult, *catalogPacket, *catalogExportPath)
+		if err != nil {
+			var pathErr *os.PathError
+			if errors.As(err, &pathErr) {
+				return cli.Envf(env, "instruction render: %v", err)
+			}
+			fmt.Fprintf(env.Stderr, "rice-agent: instruction render: invalid Catalog export: %v\n", err)
+			return cli.ExitNegative
+		}
+		bundle, err := marshalCatalogExport(export)
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "rice-agent: instruction render: invalid Catalog export: %v\n", err)
+			return cli.ExitNegative
+		}
+		guidance, err := renderCatalogGuidance(export)
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "rice-agent: instruction render: invalid Catalog export: %v\n", err)
+			return cli.ExitNegative
+		}
+		files["catalog-export.json"] = bundle
+		files["CATALOG_GUIDANCE.md"] = guidance
+	}
 	if err := writeInstructionTree(outputPath, files); err != nil {
 		if errors.Is(err, iofs.ErrExist) {
 			fmt.Fprintf(env.Stderr, "rice-agent: instruction render: output directory already exists: %s\n", outputPath)
@@ -74,6 +119,69 @@ func runInstruction(env *cli.Env) int {
 	}
 	fmt.Fprintf(env.Stdout, "rendered %d instruction files into %s\n", len(files), filepath.Join(outputPath, "compiled"))
 	return cli.ExitOK
+}
+
+func runInstructionCheck(env *cli.Env) int {
+	fs := flag.NewFlagSet("instruction check", flag.ContinueOnError)
+	catalogExportPath := fs.String("catalog-export", "", "")
+	sub := *env
+	sub.Args = env.Args[1:]
+	pos, code, ok := parseArgs(&sub, fs, instructionUsage)
+	if !ok {
+		return code
+	}
+	if len(pos) != 0 {
+		return cli.Usagef(env, "instruction check: unexpected argument %q", pos[0])
+	}
+	if *catalogExportPath == "" {
+		return cli.Usagef(env, "instruction check: --catalog-export is required")
+	}
+	path, err := absPath(*catalogExportPath, paths.Home(env.Getenv))
+	if err != nil {
+		return cli.Usagef(env, "instruction check: --catalog-export: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return cli.Envf(env, "instruction check: %v", err)
+	}
+	export, err := catalogExportFromBytes(content)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "rice-agent: instruction check: invalid Catalog export: %v\n", err)
+		return cli.ExitNegative
+	}
+	fmt.Fprintf(env.Stdout, "valid Catalog export: %s (%s)\n", export.Resolution.InputDigest, export.Resolution.PacketDigest)
+	return cli.ExitOK
+}
+
+func readInstructionCatalogExport(home, resultPath, packetPath, exportPath string) (instructionCatalogExport, error) {
+	if exportPath != "" {
+		path, err := absPath(exportPath, home)
+		if err != nil {
+			return instructionCatalogExport{}, err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return instructionCatalogExport{}, err
+		}
+		return catalogExportFromBytes(content)
+	}
+	resultFile, err := absPath(resultPath, home)
+	if err != nil {
+		return instructionCatalogExport{}, err
+	}
+	packetFile, err := absPath(packetPath, home)
+	if err != nil {
+		return instructionCatalogExport{}, err
+	}
+	resultBytes, err := os.ReadFile(resultFile)
+	if err != nil {
+		return instructionCatalogExport{}, err
+	}
+	packetBytes, err := os.ReadFile(packetFile)
+	if err != nil {
+		return instructionCatalogExport{}, err
+	}
+	return catalogExportFromFiles(resultBytes, packetBytes)
 }
 
 func renderInstructionFiles(sourceRoot string) (map[string][]byte, error) {

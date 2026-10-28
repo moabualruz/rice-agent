@@ -21,14 +21,24 @@ rice-agent check <name>                # admission gates G1 to G6
 rice-agent install                     # link Rice Agent and global tools into ~/.local/bin
 rice-agent install --remote hetzner    # hosts without Go get a bundle over SSH
 rice-agent instruction render --source ~/.config/agent-instructions --output ./rendered-instructions
+rice-catalog resolve --project P --repository github.com/OWNER/REPO --path . --job J --harness H --preview-context --packet ./catalog-packet.json --json > ./catalog-result.json
+rice-agent instruction render --source ~/.config/agent-instructions --catalog-result ./catalog-result.json --catalog-packet ./catalog-packet.json --output ./catalog-render
+rice-agent instruction check --catalog-export ./catalog-render/compiled/catalog-export.json
 just deploy v0.2.3 --dry-run           # release a tag here and to every hosts.<name>.install host
 rice-agent vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
 rice-agent audit --since 14d            # is reuse happening: lookups, reimplementations, copies
 ```
 
 Rendering writes only a new output directory. It does not edit instruction sources, install links,
-or alter harness configuration. Compare its `compiled/` tree with the current outputs before any
-separate cutover.
+or alter harness configuration. The Catalog result and context packet must match, be complete, and
+contain no missing mandatory guidance. The output includes `catalog-export.json` as a pinned,
+versioned offline bundle and `CATALOG_GUIDANCE.md` with rendered rules, plan templates and
+asset-free skills, including pack revisions and entry and pack digests. The packet retains every
+entry. Capability references and skills with assets stay in the JSON bundle and are not flattened
+into instruction text. `instruction check` validates the bundle without Catalog access. `--source`
+remains the local instruction-tree fallback, and invalid Catalog content never silently falls back
+to it. Compare
+the `compiled/` tree with current outputs before any separate cutover.
 
 The `agent-dry` alias remains only for the bounded migration release. It delegates to the same Rice
 Agent command implementation and is removed after known callers and approved-host cutovers are
