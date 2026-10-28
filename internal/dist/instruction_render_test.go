@@ -40,8 +40,9 @@ func TestRenderInstructionFilesUsesSourceAndRewritesRendererHeaders(t *testing.T
 		}
 	}
 	for _, name := range []string{"codex-AGENTS.md", "grok-AGENTS.md", "pi-AGENTS.md", "opencode-AGENTS.md"} {
-		if !strings.Contains(string(files[name]), "Generated from `~/.config/agent-instructions`. Edit source files there, then run `agent-gates render`.") {
-			t.Errorf("%s does not preserve the compiled renderer header", name)
+		body := string(files[name])
+		if !strings.Contains(body, "rice-agent instruction render --source ~/.config/agent-instructions --output <new-directory>") || strings.Contains(body, "agent-gates") {
+			t.Errorf("%s does not name the canonical renderer", name)
 		}
 	}
 	if !strings.Contains(string(files["codex-AGENTS.md"]), "<!-- ZVEC_GREP_START -->\n## Search\n<!-- ZVEC_GREP_END -->") {

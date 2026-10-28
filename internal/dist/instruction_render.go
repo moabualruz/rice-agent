@@ -156,12 +156,12 @@ func cursorWrapper() string {
 }
 
 func opencodeWrapper() string {
-	return "# OpenCode Global Rules\n\n<!-- agent-dry: managed sections load from shared/KERNEL.md -->\n\nGenerated from `~/.config/agent-instructions`. Edit source files there, then run `agent-gates render`.\n\nOpenCode loads modular instruction files through `~/.config/opencode/opencode.json` `instructions`.\n\nIf that config is unavailable, read these files before project-specific work:\n\n- `~/.config/agent-instructions/shared/KERNEL.md`\n- `~/.config/agent-instructions/agents/opencode.md`\n"
+	return "# OpenCode Global Rules\n\n<!-- agent-dry: managed sections load from shared/KERNEL.md -->\n\nGenerated from `~/.config/agent-instructions`. To render without overwriting this tree, run `rice-agent instruction render --source ~/.config/agent-instructions --output <new-directory>`.\n\nOpenCode loads modular instruction files through `~/.config/opencode/opencode.json` `instructions`.\n\nIf that config is unavailable, read these files before project-specific work:\n\n- `~/.config/agent-instructions/shared/KERNEL.md`\n- `~/.config/agent-instructions/agents/opencode.md`\n"
 }
 
 func inlineWrapper(harness, kernel, agent string, extra []byte) string {
 	var out strings.Builder
-	fmt.Fprintf(&out, "# %s Global Instructions\n\nGenerated from `~/.config/agent-instructions`. Edit source files there, then run `agent-gates render`.\n\n", harness)
+	fmt.Fprintf(&out, "# %s Global Instructions\n\nGenerated from `~/.config/agent-instructions`. To render without overwriting this tree, run `rice-agent instruction render --source ~/.config/agent-instructions --output <new-directory>`.\n\n", harness)
 	out.WriteString(strings.TrimRight(kernel, "\r\n"))
 	fmt.Fprintf(&out, "\n\nHarness-specific additions, read on demand:\n\n- `~/.config/agent-instructions/shared/AGENTS.md`\n- `~/.config/agent-instructions/agents/%s.md`\n", agent)
 	if len(extra) > 0 {
