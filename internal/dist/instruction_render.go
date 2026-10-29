@@ -224,12 +224,16 @@ func renderInstructionFiles(sourceRoot string) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	hermesPersona, err := markedInstructionContent(persona, "agents/hermes-soul.md", "HERMES_PERSONA")
+	if err != nil {
+		return nil, err
+	}
 	for _, name := range []string{"claude", "agy", "hermes", "cursor", "opencode", "grok", "pi"} {
 		if _, err := read("agents/" + name + ".md"); err != nil {
 			return nil, err
 		}
 	}
-	zvec, err := markedInstructionBlock(codex, "ZVEC_GREP")
+	zvec, err := markedInstructionBlock(codex, "agents/codex.md", "ZVEC_GREP")
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +249,7 @@ func renderInstructionFiles(sourceRoot string) (map[string][]byte, error) {
 		"codex-AGENTS.md":               []byte(inlineWrapper("Codex", kernelText, "codex", zvec)),
 		"grok-AGENTS.md":                []byte(inlineWrapper("Grok", kernelText, "grok", nil)),
 		"pi-AGENTS.md":                  []byte(inlineWrapper("Pi", kernelText, "pi", nil)),
-		"hermes-SOUL.md":                append(append(bytesTrimNewline(persona), []byte("\n\n")...), kernel...),
+		"hermes-SOUL.md":                append(append(bytesTrimNewline(hermesPersona), []byte("\n\n")...), kernel...),
 		"opencode-AGENTS.md":            []byte(opencodeWrapper()),
 	}
 	return files, nil
@@ -282,18 +286,32 @@ func inlineWrapper(harness, kernel, agent string, extra []byte) string {
 	return out.String()
 }
 
-func markedInstructionBlock(source []byte, name string) ([]byte, error) {
+func markedInstructionBlock(source []byte, sourceName, name string) ([]byte, error) {
 	start := []byte("<!-- " + name + "_START -->")
 	end := []byte("<!-- " + name + "_END -->")
 	if strings.Count(string(source), string(start)) != 1 || strings.Count(string(source), string(end)) != 1 {
-		return nil, fmt.Errorf("agents/codex.md must contain exactly one %s block", name)
+		return nil, fmt.Errorf("%s must contain exactly one %s block", sourceName, name)
 	}
 	i := strings.Index(string(source), string(start))
 	j := strings.Index(string(source), string(end))
 	if j < i {
-		return nil, fmt.Errorf("agents/codex.md has reversed %s markers", name)
+		return nil, fmt.Errorf("%s has reversed %s markers", sourceName, name)
 	}
 	return source[i : j+len(end)], nil
+}
+
+func markedInstructionContent(source []byte, sourceName, name string) ([]byte, error) {
+	block, err := markedInstructionBlock(source, sourceName, name)
+	if err != nil {
+		return nil, err
+	}
+	start := []byte("<!-- " + name + "_START -->")
+	end := []byte("<!-- " + name + "_END -->")
+	content := strings.TrimSpace(string(block[len(start) : len(block)-len(end)]))
+	if content == "" {
+		return nil, fmt.Errorf("%s must contain non-empty %s content", sourceName, name)
+	}
+	return []byte(content), nil
 }
 
 func writeInstructionTree(outputRoot string, files map[string][]byte) error {

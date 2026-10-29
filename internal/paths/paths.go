@@ -92,31 +92,40 @@ func LoadConfig(getenv func(string) string) (*Config, error) {
 	return &c, nil
 }
 
-// Root finds the rice-agent root: AGENT_DRY_ROOT, then config root, then the directory above the
-// real path of the running executable that contains Marker.
+// Root finds an explicit root, then the bundle containing the executable, then the configured root.
 func Root(getenv func(string) string) (string, error) {
-	if p := getenv("AGENT_DRY_ROOT"); p != "" {
-		return checkRoot(p)
-	}
-	if c, err := LoadConfig(getenv); err == nil && c.Root != "" {
-		return checkRoot(c.Root)
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
+	return rootForExecutable(exe, getenv)
+}
+
+func rootForExecutable(exe string, getenv func(string) string) (string, error) {
+	if p := getenv("AGENT_DRY_ROOT"); p != "" {
+		return checkRoot(p)
+	}
+	if root := executableRoot(exe); root != "" {
+		return root, nil
+	}
+	if c, err := LoadConfig(getenv); err == nil && c.Root != "" {
+		return checkRoot(c.Root)
+	}
+	return "", fmt.Errorf("rice-agent root not found; set AGENT_DRY_ROOT or \"root\" in %s", ConfigPath(getenv))
+}
+
+func executableRoot(exe string) string {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
 	for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
 		if _, err := os.Stat(filepath.Join(dir, Marker)); err == nil {
-			return dir, nil
+			return dir
 		}
 		if parent := filepath.Dir(dir); parent == dir {
-			break
+			return ""
 		}
 	}
-	return "", fmt.Errorf("rice-agent root not found; set AGENT_DRY_ROOT or \"root\" in %s", ConfigPath(getenv))
 }
 
 func checkRoot(p string) (string, error) {

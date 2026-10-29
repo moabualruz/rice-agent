@@ -17,7 +17,7 @@ func instructionFixture(t *testing.T) string {
 	for _, name := range []string{"claude", "agy", "hermes", "cursor", "opencode", "grok", "pi"} {
 		writeFile(t, filepath.Join(root, "agents", name+".md"), "# "+name+" additions\n", 0o644)
 	}
-	writeFile(t, filepath.Join(root, "agents", "hermes-soul.md"), "Hermes persona\n", 0o644)
+	writeFile(t, filepath.Join(root, "agents", "hermes-soul.md"), "# Hermes soul\n\n<!-- HERMES_PERSONA_START -->\nHermes persona\n<!-- HERMES_PERSONA_END -->\n\nOther instructions\n", 0o644)
 	writeFile(t, filepath.Join(root, "agents", "codex.md"), "# Codex\n\n<!-- ZVEC_GREP_START -->\n## Search\n<!-- ZVEC_GREP_END -->\n", 0o644)
 	return root
 }
@@ -48,8 +48,34 @@ func TestRenderInstructionFilesUsesSourceAndRewritesRendererHeaders(t *testing.T
 	if !strings.Contains(string(files["codex-AGENTS.md"]), "<!-- ZVEC_GREP_START -->\n## Search\n<!-- ZVEC_GREP_END -->") {
 		t.Fatal("Codex source block was not included")
 	}
-	if !strings.HasPrefix(string(files["hermes-SOUL.md"]), "Hermes persona\n\n# Kernel\n") {
+	hermes := string(files["hermes-SOUL.md"])
+	if !strings.HasPrefix(hermes, "Hermes persona\n\n# Kernel\n") {
 		t.Fatal("Hermes persona and kernel were not assembled")
+	}
+	if strings.Contains(hermes, "HERMES_PERSONA_") || strings.Contains(hermes, "Other instructions") || strings.Contains(hermes, "# Hermes soul") {
+		t.Fatal("Hermes output included content outside the marked persona paragraph")
+	}
+}
+
+func TestRenderInstructionFilesRejectsMalformedHermesPersonaMarkers(t *testing.T) {
+	cases := []struct {
+		name, source string
+	}{
+		{"missing start", "Hermes persona\n<!-- HERMES_PERSONA_END -->\n"},
+		{"missing end", "<!-- HERMES_PERSONA_START -->\nHermes persona\n"},
+		{"duplicate start", "<!-- HERMES_PERSONA_START --><!-- HERMES_PERSONA_START -->Hermes persona<!-- HERMES_PERSONA_END -->"},
+		{"duplicate end", "<!-- HERMES_PERSONA_START -->Hermes persona<!-- HERMES_PERSONA_END --><!-- HERMES_PERSONA_END -->"},
+		{"reversed", "<!-- HERMES_PERSONA_END -->Hermes persona<!-- HERMES_PERSONA_START -->"},
+		{"empty", "<!-- HERMES_PERSONA_START --> \n\t<!-- HERMES_PERSONA_END -->"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := instructionFixture(t)
+			writeFile(t, filepath.Join(root, "agents", "hermes-soul.md"), tc.source, 0o644)
+			if _, err := renderInstructionFiles(root); err == nil {
+				t.Fatal("render accepted malformed or empty Hermes persona content")
+			}
+		})
 	}
 }
 
