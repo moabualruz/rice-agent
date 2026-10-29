@@ -29,7 +29,7 @@ func init() {
 	cli.Register(cli.Command{Name: "vendor", Summary: "copy a tool into a repository with checksums, or check copies for drift", Run: runVendor})
 	cli.Register(cli.Command{Name: "bundle", Summary: "cross-compile rice-agent and pack a release tarball", Run: runBundle})
 	cli.Register(cli.Command{Name: "section", Summary: "install or check a managed section in every harness instruction file", Run: runSection})
-	cli.Register(cli.Command{Name: "instruction", Summary: "render the shared instruction sources into compiled outputs", Run: runInstruction})
+	cli.Register(cli.Command{Name: "instruction", Summary: "render or write managed instruction files", Run: runInstruction})
 }
 
 // The dash glyphs are built from byte escapes so no source file contains them.

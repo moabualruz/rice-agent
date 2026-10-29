@@ -21,6 +21,7 @@ rice-agent check <name>                # admission gates G1 to G6
 rice-agent install                     # link Rice Agent and global tools into ~/.local/bin
 rice-agent install --remote hetzner    # hosts without Go get a bundle over SSH
 rice-agent instruction render --source ~/.config/agent-instructions --output ./rendered-instructions
+rice-agent instruction write --plan - < approved-instruction-plan.json
 rice-catalog resolve --project P --repository github.com/OWNER/REPO --path . --job J --harness H --preview-context --packet ./catalog-packet.json --json > ./catalog-result.json
 rice-agent instruction render --source ~/.config/agent-instructions --catalog-result ./catalog-result.json --catalog-packet ./catalog-packet.json --output ./catalog-render
 rice-agent instruction check --catalog-export ./catalog-render/compiled/catalog-export.json
@@ -39,6 +40,12 @@ into instruction text. `instruction check` validates the bundle without Catalog 
 remains the local instruction-tree fallback, and invalid Catalog content never silently falls back
 to it. Compare
 the `compiled/` tree with current outputs before any separate cutover.
+
+`rice-agent instruction write --plan -` is the pinned local materializer for product-owned instruction
+plans. It receives explicit roots, relative paths, expected previous hashes and content over stdin,
+refuses path escapes, symlinks and changed snapshots, and writes each file atomically. It performs no
+network lookup, so an approved offline release works the same way. Callers must verify the executable
+version and digest before delegating.
 
 The `agent-dry` alias remains only for the bounded migration release. It delegates to the same Rice
 Agent command implementation and is removed after known callers and approved-host cutovers are

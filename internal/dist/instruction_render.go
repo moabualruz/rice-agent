@@ -15,12 +15,14 @@ import (
 )
 
 const instructionUsage = `Usage: rice-agent instruction render --source <agent-instructions> --output <new-directory> [catalog options]
+       rice-agent instruction write --plan -
        rice-agent instruction check --catalog-export <file>
 
 Render the source instruction layout into <output>/compiled. The output directory must not exist.
 A Catalog resolve result and packet can be bundled into the output for deterministic offline use.
-This command only renders derived files; it does not update instruction sources, install links, or
-change harness configuration. Use --source alone as the offline source-tree fallback.
+Rendering does not update instruction sources, install links, or change harness configuration.
+Use --source alone as the offline source-tree fallback. The write subcommand applies an explicit,
+preflighted instruction file plan supplied on stdin.
 
 Options:
   --source <dir>            source root (for example ~/.config/agent-instructions)
@@ -44,6 +46,9 @@ func runInstruction(env *cli.Env) int {
 	}
 	if env.Args[0] == "check" {
 		return runInstructionCheck(env)
+	}
+	if env.Args[0] == "write" {
+		return runInstructionWrite(env)
 	}
 	if env.Args[0] != "render" {
 		return cli.Usagef(env, "instruction: unknown subcommand %q; run rice-agent instruction --help", env.Args[0])
