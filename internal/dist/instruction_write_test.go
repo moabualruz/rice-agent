@@ -51,8 +51,11 @@ func TestInstructionWriteAppliesPinnedFilesAndRepeats(t *testing.T) {
 	before := sha256Bytes([]byte(content))
 	plan.Files[0].BeforeSHA256 = &before
 	code, out, errb = runInstructionWriteTest(t, plan)
-	if code != cli.ExitOK || !strings.Contains(out, `"action":"unchanged"`) {
-		t.Fatalf("repeat: %d %s %s", code, out, errb)
+	if code != cli.ExitOK {
+		t.Fatalf("repeat: %d %s", code, errb)
+	}
+	if err := json.Unmarshal([]byte(out), &receipt); err != nil || len(receipt) != 1 || receipt[0].Action != "unchanged" {
+		t.Fatalf("repeat receipt = %q, err = %v", out, err)
 	}
 }
 
