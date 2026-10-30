@@ -28,6 +28,12 @@
     "node >= 24"
   ],
   "test": "bash test.sh",
+  "distinct_from": [
+    {
+      "tool": "check-no-dashes",
+      "reason": "git-canonical-gate validates canonical gate receipts and retry reuse; check-no-dashes checks text for Unicode dash characters"
+    }
+  ],
   "status": "trial",
   "origin": {
     "date": "2026-10-20",

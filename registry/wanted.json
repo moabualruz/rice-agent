@@ -7,11 +7,11 @@
         "why was my command blocked",
         "hook denied command",
         "command preflight check",
-        "agent-gates rule text",
+        "verified command policy guidance",
         "check command against hook rules",
         "avoid hook denial"
       ],
-      "evidence": "177 hook denials re-learned in each session (2026-09-15 to 2026-10-17); feed agent-gates rule texts into find results",
+      "evidence": "177 hook denials re-learned in each session (2026-09-15 to 2026-10-17); surface verified command-preflight guidance in find results",
       "research": "rice-kb:docs/research/agent-dry-local-evidence-20261017.md",
       "suggested_name": "preflight-notes",
       "suggested_kind": "script"
