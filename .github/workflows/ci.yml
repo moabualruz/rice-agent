@@ -54,14 +54,25 @@ jobs:
             exit 1
           fi
           env -u GOFLAGS go version
-          export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-          if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-            echo "::error::NVM is required; the canonical-gate tests need existing Node 24+"
+          if [ ! -x /usr/local/bin/mise ]; then
+            echo "::error::mise is unavailable; the canonical-gate tests need Node 24.18.0"
             exit 1
           fi
-          source "$NVM_DIR/nvm.sh"
-          nvm use 24
-          dirname "$(command -v node)" >> "$GITHUB_PATH"
+          node_dir=$(MISE_DATA_DIR=/opt/mise /usr/local/bin/mise where node@24.18.0)
+          if [ "$node_dir" != /opt/mise/installs/node/24.18.0 ] || [ ! -x "$node_dir/bin/node" ]; then
+            echo "::error::mise Node 24.18.0 is unavailable at the provisioned runner path"
+            exit 1
+          fi
+          if [ "$(stat -c %u "$node_dir/bin")" != 0 ]; then
+            echo "::error::mise Node 24.18.0 must be root-owned on this runner"
+            exit 1
+          fi
+          node_version=$("$node_dir/bin/node" --version)
+          if [ "$node_version" != v24.18.0 ]; then
+            echo "::error::expected mise Node 24.18.0, got $node_version"
+            exit 1
+          fi
+          echo "$node_dir/bin" >> "$GITHUB_PATH"
           missing=""
           for cmd in shellcheck jq; do
             command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
