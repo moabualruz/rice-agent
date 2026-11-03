@@ -1,13 +1,18 @@
 package gates
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/moabualruz/rice-agent/internal/dist"
 	"github.com/moabualruz/rice-agent/internal/registry"
 )
 
@@ -134,6 +139,78 @@ func TestCheckPathCollision(t *testing.T) {
 	if code, out, _ := run(t, "check", "good-tool"); code != 0 {
 		t.Errorf("installed link counted as collision: exit %d\n%s", code, out)
 	}
+}
+
+func TestPathCollisionInstalledGoReceipt(t *testing.T) {
+	root := rootWith(t, "good-tool")
+	isolate(t, root)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, prefix := filepath.Join(base, "state"), filepath.Join(base, "bin")
+	t.Setenv("AGENT_DRY_STATE", state)
+	t.Setenv("PATH", prefix+string(os.PathListSeparator)+os.Getenv("PATH"))
+	toolFile := filepath.Join(root, "tools", "good-tool", "tool.json")
+	var tool map[string]any
+	if err := json.Unmarshal([]byte(readFile(t, toolFile)), &tool); err != nil {
+		t.Fatal(err)
+	}
+	tool["language"], tool["kind"] = "go", "cli"
+	toolJSON, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, toolFile, string(toolJSON), 0o644)
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	target := filepath.Join(state, "go-tools", "good-tool", platform, "good-tool")
+	const artifact = "compiled fixture artifact\n"
+	writeFile(t, target, artifact, 0o755)
+	if err := os.MkdirAll(prefix, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(prefix, "good-tool")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	receipt := dist.Receipt{Schema: dist.ReceiptSchema, Root: root, Prefix: prefix, Platform: platform,
+		Links: []dist.Link{{Name: "good-tool", Path: link, Target: target, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(artifact)))}}}
+	writeReceipt := func() {
+		t.Helper()
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(state, dist.ReceiptFile), string(raw), 0o600)
+	}
+	collision := func(want bool) {
+		t.Helper()
+		if got := pathCollision("good-tool", filepath.Join(root, "tools")); (got != "") != want {
+			t.Fatalf("collision=%q, want collision=%t", got, want)
+		}
+	}
+	collision(true)
+	writeReceipt()
+	collision(false)
+	writeFile(t, target, "changed artifact\n", 0o755)
+	collision(true)
+	writeFile(t, target, artifact, 0o755)
+	receipt.Links[0].SHA256 = ""
+	writeReceipt()
+	collision(true)
+	receipt.Links[0].SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(artifact)))
+	receipt.Platform = "other-platform"
+	writeReceipt()
+	collision(true)
+	receipt.Platform = platform
+	writeReceipt()
+	if err := os.Rename(target, target+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target+".original", target); err != nil {
+		t.Fatal(err)
+	}
+	collision(true)
 }
 
 func TestCheckDashes(t *testing.T) {
