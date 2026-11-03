@@ -16,13 +16,13 @@ command -v shellcheck >/dev/null 2>&1 || fail "ShellCheck is unavailable" "insta
 command -v gitleaks >/dev/null 2>&1 || fail "gitleaks is unavailable" "install gitleaks, then run just ci"
 command -v bash >/dev/null 2>&1 || fail "Bash is unavailable" "install Bash, then run just ci"
 
-nvm_dir=${NVM_DIR:-"$HOME/.nvm"}
-[[ -s "$nvm_dir/nvm.sh" ]] || fail "NVM is unavailable" "install NVM and Node 24, then run just ci"
-# shellcheck disable=SC1090
-source "$nvm_dir/nvm.sh"
-nvm use 24 >/dev/null 2>&1 || fail "NVM Node 24 is unavailable" "install Node 24 through NVM, then run just ci"
-node_path=$(command -v node || true)
-[[ -n "$node_path" && "$node_path" == "$nvm_dir"/* ]] || fail "Node is not provided by NVM" "activate Node 24 through NVM, then run just ci"
+mise_path=$(command -v mise || true)
+[[ -n "$mise_path" ]] || fail "mise is unavailable" "install mise with Node 24.18.0, then run just ci"
+node_dir=$("$mise_path" where node@24.18.0 2>/dev/null) || fail "mise Node 24.18.0 is unavailable" "install Node 24.18.0 through mise, then run just ci"
+node_path="$node_dir/bin/node"
+[[ -x "$node_path" ]] || fail "mise Node 24.18.0 is unavailable" "install Node 24.18.0 through mise, then run just ci"
+node_version=$("$node_path" --version 2>/dev/null) || fail "mise Node 24.18.0 could not run" "repair the mise Node 24.18.0 installation, then run just ci"
+[[ "$node_version" == "v24.18.0" ]] || fail "Node 24.18.0 is not active through mise" "activate Node 24.18.0 through mise, then run just ci"
 
 if [[ -f "$root/.gitmodules" ]]; then
   status=$(git -C "$root" submodule status --recursive 2>/dev/null) || fail "submodule state could not be read" "run git submodule update --init --recursive"

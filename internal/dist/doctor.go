@@ -251,6 +251,35 @@ func orNone(s string) string {
 	return s
 }
 
+// InstalledGoToolMatches requires the native install receipt, link and unchanged artifact bytes.
+func InstalledGoToolMatches(name, linkPath string, getenv func(string) string) bool {
+	stateDir, err := stateDirectory(getenv)
+	if err != nil {
+		return false
+	}
+	receipt, err := loadReceipt(receiptPath(getenv))
+	if err != nil || receipt.Platform != platform() {
+		return false
+	}
+	tool, err := manifest.Load(filepath.Join(receipt.Root, "tools", name))
+	if err != nil || tool.Language != "go" || tool.Scope != "global" || !tool.Listed() {
+		return false
+	}
+	target := goToolTarget(filepath.Join(stateDir, "go-tools"), name, platform())
+	resolved, err := resolvedPath(target, "")
+	if err != nil || resolved != target {
+		return false
+	}
+	for _, link := range receipt.Links {
+		if link.Name != name || link.Path != linkPath || link.Target != target || link.SHA256 == "" || linkProblem(link) != "" {
+			continue
+		}
+		sum, err := sha256File(target)
+		return err == nil && sum == link.SHA256
+	}
+	return false
+}
+
 // linkProblem returns why a receipt link is no longer valid, or "".
 func linkProblem(l Link) string {
 	info, err := os.Lstat(l.Path)

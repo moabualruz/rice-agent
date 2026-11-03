@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/moabualruz/rice-agent/internal/cli"
+	"github.com/moabualruz/rice-agent/internal/dist"
 	"github.com/moabualruz/rice-agent/internal/manifest"
 	"github.com/moabualruz/rice-agent/internal/paths"
 	"github.com/moabualruz/rice-agent/internal/registry"
@@ -588,7 +589,7 @@ func mkdirTracked(dir string) ([]string, error) {
 
 // pathCollision returns where name resolves on PATH when that is not this tool: neither inside
 // toolsDir, nor a symlink into it, nor the same tool inside another rice-agent root (an installed
-// bundle). It returns "" when name does not resolve.
+// bundle), nor a receipt-verified installed Go artifact. It returns "" when name does not resolve.
 func pathCollision(name, toolsDir string) string {
 	found, err := exec.LookPath(name)
 	if err != nil && !errors.Is(err, exec.ErrDot) {
@@ -619,6 +620,9 @@ func pathCollision(name, toolsDir string) string {
 				return ""
 			}
 		}
+	}
+	if dist.InstalledGoToolMatches(name, abs, os.Getenv) {
+		return ""
 	}
 	return abs
 }
