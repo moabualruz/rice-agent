@@ -35,9 +35,16 @@ func TestVendorCopiesWithChecksumsAndDetectsDrift(t *testing.T) {
 	if code != 0 || out != "scripts/check.sh\n.agent-dry/vendor.json\n.agent-dry/SHA256SUMS\n" {
 		t.Fatalf("vendor --as: %d %q %s", code, out, errb)
 	}
+	sourceInfo, err := os.Stat(filepath.Join(root, "tools", "dfx-active", "dfx-active"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Stat(filepath.Join(repo, "scripts", "check.sh"))
-	if err != nil || info.Mode().Perm() != 0o755 {
-		t.Fatalf("mode not preserved: %v %v", info, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != sourceInfo.Mode().Perm() {
+		t.Fatalf("mode not preserved: got %v, want %v", info.Mode().Perm(), sourceInfo.Mode().Perm())
 	}
 	if got, want := readFile(t, filepath.Join(repo, "scripts", "check.sh")), readFile(t, filepath.Join(root, "tools", "dfx-active", "dfx-active")); got != want {
 		t.Fatal("vendored content differs")
