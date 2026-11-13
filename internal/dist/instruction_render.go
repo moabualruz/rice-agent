@@ -17,6 +17,7 @@ import (
 const instructionUsage = `Usage: rice-agent instruction render --source <agent-instructions> --output <new-directory> [catalog options]
        rice-agent instruction write --plan -
        rice-agent instruction check --catalog-export <file>
+       rice-agent instruction source-plan --catalog-export <file> --mapping <file>
 
 Render the source instruction layout into <output>/compiled. The output directory must not exist.
 A Catalog resolve result and packet can be bundled into the output for deterministic offline use.
@@ -49,6 +50,9 @@ func runInstruction(env *cli.Env) int {
 	}
 	if env.Args[0] == "write" {
 		return runInstructionWrite(env)
+	}
+	if env.Args[0] == "source-plan" {
+		return runInstructionSourcePlan(env)
 	}
 	if env.Args[0] != "render" {
 		return cli.Usagef(env, "instruction: unknown subcommand %q; run rice-agent instruction --help", env.Args[0])
