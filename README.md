@@ -41,6 +41,42 @@ remains the local instruction-tree fallback, and invalid Catalog content never s
 to it. Compare
 the `compiled/` tree with current outputs before any separate cutover.
 
+For migrated rules, `instruction source-plan` derives the existing writer plan directly from the
+pinned export rather than maintaining a second authored payload. A mapping explicitly binds each
+target to one pack revision, entry, digest and prior file hash. For example, in a scratch fixture:
+
+```json
+{
+  "schema": "rice-agent/instruction-sources/v1",
+  "root": "/absolute/scratch/instruction-fixture",
+  "files": [{
+    "path": "shared/modules/example.md",
+    "before_sha256": null,
+    "mode": 420,
+    "ref": {"pack": "namespace/owner-core", "revision": "approved-revision", "entry": "example"},
+    "digest": "sha256:<exact-entry-digest>"
+  }]
+}
+```
+
+Use the actual entry reference and digest from the approved export. `before_sha256` is the bare
+64-character SHA-256 of an existing target, or null only when creating a new target. Mode 420 is
+JSON's decimal representation of permission mode 0644. Planning writes nothing and rejects stale
+snapshots, symlinks, unsafe paths, missing or empty rules, mismatched pins and duplicate ownership.
+A previously materialized rule can be planned again without changing its bytes.
+
+```sh
+rice-agent instruction source-plan --catalog-export ./catalog-render/compiled/catalog-export.json --mapping ./source-mapping.json > ./source-plan.json
+rice-agent instruction write --plan - < ./source-plan.json
+```
+
+Retain the approved mapping and Catalog export alongside the plan for complete lineage. Review the
+plan before the separate write. Rule files are generated exports; edit their authored Guidance
+entries, then resolve and approve the next pinned export. Compare every materialized rule with its
+authored entry and render the scratch instruction tree before any separately authorized host cutover.
+Unmapped kernel and module fallbacks are not changed. This command does not publish packs, alter
+bindings or establish that an arbitrary local export was approved by Catalog.
+
 `rice-agent instruction write --plan -` is the pinned local materializer for product-owned instruction
 plans. It receives explicit roots, relative paths, expected previous hashes and content over stdin,
 refuses path escapes, symlinks and changed snapshots, and writes each file atomically. It performs no
