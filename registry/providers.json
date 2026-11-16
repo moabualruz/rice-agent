@@ -18,7 +18,7 @@
       "owner": "project:moabualruz/rice-edit",
       "license": "Apache-2.0",
       "install": "provided by rice-edit releases",
-      "homepage": "https://github.com/moabualruz/rice-edit",
+      "homepage": "https://github.com/moabualruz/rice-agent",
       "notes": "Go, TypeScript, Rust, Java and Dart. Flow: rice-edit plan semantic (rename, move) or plan structural, then plan freeze, apply and verify; navigate, symbols and diagnostics read code. Structural rewrites are experimental and pin ast-grep 0.50.0. rice-edit help lists the verbs."
     },
     {

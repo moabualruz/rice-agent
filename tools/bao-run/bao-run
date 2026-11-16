@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bao-run: run one command with a short-lived OpenBao token, then revoke it.
-# Promoted from abualruz-homelab/scripts/bao-operator-run.sh; same CLI and exit codes.
+# Promoted from the maintainer's homelab OpenBao operator wrapper; same CLI and exit codes.
 #
 # Logs in with userpass, exports BAO_ADDR/BAO_TOKEN and VAULT_ADDR/VAULT_TOKEN to the child
 # process only, and revokes the token when the child exits. The password is read from the

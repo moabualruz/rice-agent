@@ -2,17 +2,15 @@
 
 ## Purpose
 
-Private repository for the owner's cross-project agent tooling and canonical instruction writer.
-It evolves the existing agent-dry repository while preserving history. `rice-agent` is the canonical
+Cross-project agent tooling and canonical instruction writer, released under the MIT License.
+It evolves the earlier agent-dry repository while preserving history. `rice-agent` is the canonical
 CLI; `agent-dry` is a temporary one-release alias to the same implementation.
 
 ## Tracking and planning
 
-- Rice Observe is the tracker: effort `rice-agent-v1` in the `rice-kb` source. Design
-  `rice-kb:docs/research/agent-projects-into-rice-20261028.md`, tickets
-  `rice-kb:.scratch/rice-agent-v1/issues/`. Historical implementation decisions remain under
-  `rice-kb:.scratch/agent-dry-v1/` and `rice-kb:docs/specs/agent-dry.md`. Read and write them with
-  Rice MCP tools or `rice-client document read|write`.
+- The maintainer tracks work in a private Rice Observe instance (effort `rice-agent-v1`, source `rice-kb`);
+  `rice-kb:` identifiers in manifests and docs point there. Read and write it with Rice MCP tools or
+  `rice-client document read|write`.
 - Keep planning, research and status in Rice. This repository holds code, manifests, the policy
   section source and code-facing docs.
 
@@ -41,5 +39,5 @@ CLI; `agent-dry` is a temporary one-release alias to the same implementation.
 - `bash tools/check-no-dashes/check-no-dashes --tree`
 - `gitleaks git --no-banner --redact`
 - CI (`.github/workflows/ci.yml`) runs the guards job (dash and secret checks) and the go job (vet,
-  test, build, `rice-agent check --all`) on the self-hosted pool
-  (`runs-on: [self-hosted, linux, x64, generic]`); never hosted runners.
+  test, build, `rice-agent check --all`) on GitHub-hosted runners (`runs-on: ubuntu-latest`). No workflow may use `pull_request_target`, a
+  secret or a self-hosted runner for pull requests; `scripts/workflows.test.sh` enforces it.

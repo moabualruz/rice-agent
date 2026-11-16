@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install-vendir: download the pinned Carvel vendir release for this OS and architecture into DEST
 # and verify its SHA-256 against the values pinned below (from the release's checksums.txt).
-# Promoted from the Rice repositories' scripts/install-vendir.sh, which six of them carried
+# Promoted from the maintainer's Rice repositories' scripts/install-vendir.sh, which six of them carried
 # byte-identically; callers keep invoking it as `install-vendir.sh DEST`. Nothing is installed
 # system-wide.
 set -euo pipefail

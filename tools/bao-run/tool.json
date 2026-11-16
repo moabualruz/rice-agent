@@ -48,6 +48,6 @@
     "date": "2026-10-17",
     "builder": "claude-opus-5-5",
     "task": "agent-dry-v1 issue 12: promote the OpenBao wrapper as bao-run",
-    "promoted_from": "abualruz-homelab/scripts/bao-operator-run.sh"
+    "promoted_from": "the maintainer's homelab OpenBao operator wrapper script"
   }
 }

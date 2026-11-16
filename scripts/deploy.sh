@@ -4,7 +4,7 @@
 set -euo pipefail
 
 PROG="deploy"
-GH_REPO="moabualruz/agent-dry"
+GH_REPO="moabualruz/rice-agent"
 LDVAR="github.com/moabualruz/rice-agent/internal/commands.Version"
 # shellcheck disable=SC2088 # a literal ~ for the remote host; the clone script expands it there
 DEFAULT_CLONE_ROOT='~/workspace/agent-dry'
@@ -20,7 +20,7 @@ Release <tag> of rice-agent to this machine and to every host in the rice-agent 
 hosts.<name>.install, then verify each one.
 
   1. check   <tag> exists locally and on origin at the same commit, and the latest hosted CI run
-             for that commit (pr-flow runs <sha> --repo moabualruz/agent-dry --limit 1 --json)
+             for that commit (pr-flow runs <sha> --repo moabualruz/rice-agent --limit 1 --json)
              concluded success
   2. build   git archive of the tag's commit into a temporary root (never the working tree), a
              VERSION file, and env -u GOFLAGS CGO_ENABLED=0 go build -o <tmp>/bin/rice-agent with
