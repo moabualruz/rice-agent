@@ -125,17 +125,17 @@ EOF
 cat >"$stub/pr-flow" <<'EOF'
 #!/usr/bin/env bash
 printf 'pr-flow %s\n' "$*" >>"$STUB_LOG"
-if [ "$#" -ne 7 ] || [ "$1" != runs ] || [ "$3 $4 $5 $6 $7" != "--repo moabualruz/agent-dry --limit 1 --json" ]; then
+if [ "$#" -ne 7 ] || [ "$1" != runs ] || [ "$3 $4 $5 $6 $7" != "--repo moabualruz/rice-agent --limit 1 --json" ]; then
   echo "stub-pr-flow: unexpected arguments: $*" >&2
   exit 99
 fi
 [ -z "${STUB_PRFLOW_EXIT:-}" ] || exit "$STUB_PRFLOW_EXIT"
 if [ -n "${STUB_CI_NONE:-}" ]; then
-  printf '{"repo":"moabualruz/agent-dry","ref":"%s","ref_kind":"sha","runs":[]}\n' "$2"
+  printf '{"repo":"moabualruz/rice-agent","ref":"%s","ref_kind":"sha","runs":[]}\n' "$2"
   echo "pr-flow: no workflow runs for sha $2" >&2
   exit 1
 fi
-printf '{"repo":"moabualruz/agent-dry","ref":"%s","ref_kind":"sha","runs":[{"id":4242,"workflow":"CI","status":"%s","conclusion":"%s","head_sha":"%s"}]}\n' \
+printf '{"repo":"moabualruz/rice-agent","ref":"%s","ref_kind":"sha","runs":[{"id":4242,"workflow":"CI","status":"%s","conclusion":"%s","head_sha":"%s"}]}\n' \
   "$2" "${STUB_CI_STATUS:-completed}" "${STUB_CI_CONCLUSION-success}" "$2"
 EOF
 
@@ -306,7 +306,7 @@ expect_in "origin failure output keeps the redacted line" err "<redacted>@github
 STUB_CI_CONCLUSION=failure expect_exit "a failed CI run is refused" 1 deploy v9.9.9
 expect_in "CI refusal names the run and the override" err "run 4242 (CI) for ${B:0:12} is completed/failure, not success; wait or pass --skip-ci-check"
 log
-expect_line "CI was asked about the tag's commit" log "^pr-flow runs $B --repo moabualruz/agent-dry --limit 1 --json$"
+expect_line "CI was asked about the tag's commit" log "^pr-flow runs $B --repo moabualruz/rice-agent --limit 1 --json$"
 expect_no_line "CI refusal builds nothing" log '^go '
 expect_no_line "CI refusal contacts no host" log '^host-run '
 STUB_CI_STATUS=in_progress STUB_CI_CONCLUSION="" expect_exit "a running CI run is refused" 1 deploy v9.9.9 --dry-run

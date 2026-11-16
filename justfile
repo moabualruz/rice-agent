@@ -24,6 +24,7 @@ test:
     env -u GOFLAGS go test ./...
     bash scripts/deploy.test.sh
     bash scripts/worktree-doctor.test.sh
+    bash scripts/workflows.test.sh
 
 # Release TAG to this machine and every hosts.<name>.install host (see scripts/deploy.sh --help).
 deploy TAG *ARGS:

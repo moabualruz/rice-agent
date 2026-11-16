@@ -15,13 +15,16 @@ permissions:
 
 jobs:
   guards:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, generic]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
 
       - name: No em or en dash
         shell: bash
@@ -37,50 +40,30 @@ jobs:
           "$tools/gitleaks" git --no-banner --redact
 
   go:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, generic]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.18.0
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3
+
       - name: Toolchain
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v go >/dev/null 2>&1; then
-            echo "::error::go is not installed on this runner; the go job needs Go 1.27 or newer"
-            exit 1
-          fi
           env -u GOFLAGS go version
-          if [ ! -x /usr/local/bin/mise ]; then
-            echo "::error::mise is unavailable; the canonical-gate tests need Node 24.18.0"
-            exit 1
-          fi
-          node_dir=$(MISE_DATA_DIR=/opt/mise /usr/local/bin/mise where node@24.18.0)
-          if [ "$node_dir" != /opt/mise/installs/node/24.18.0 ] || [ ! -x "$node_dir/bin/node" ]; then
-            echo "::error::mise Node 24.18.0 is unavailable at the provisioned runner path"
-            exit 1
-          fi
-          if [ "$(stat -c %u "$node_dir/bin")" != 0 ]; then
-            echo "::error::mise Node 24.18.0 must be root-owned on this runner"
-            exit 1
-          fi
-          node_version=$("$node_dir/bin/node" --version)
-          if [ "$node_version" != v24.18.0 ]; then
-            echo "::error::expected mise Node 24.18.0, got $node_version"
-            exit 1
-          fi
-          echo "$node_dir/bin" >> "$GITHUB_PATH"
-          missing=""
-          for cmd in shellcheck jq; do
-            command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::missing on this runner:$missing; rice-agent check needs them for gates G4 and G5"
-            exit 1
-          fi
+          node --version
+          just --version
           shellcheck --version | sed -n 2p
           jq --version
 
@@ -106,3 +89,4 @@ jobs:
           set -euo pipefail
           bash scripts/deploy.test.sh
           bash scripts/worktree-doctor.test.sh
+          bash scripts/workflows.test.sh

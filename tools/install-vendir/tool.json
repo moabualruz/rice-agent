@@ -35,7 +35,7 @@
     "date": "2026-10-18",
     "builder": "claude-opus-5-5",
     "task": "rice-kb:.scratch/agent-ecosystem-v1/issues/08-cross-project-duplication-scan.md",
-    "promoted_from": "rice-catalog/scripts/install-vendir.sh (byte-identical in rice-contracts, rice-edit, rice-index, rice-observe and rice-release; a variant in rice-review)"
+    "promoted_from": "scripts/install-vendir.sh, carried byte-identically by six of the maintainer's Rice repositories"
   },
   "replaces": [
     "releases/download/[^ ]*/vendir-(darwin|linux|windows)",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/moabualruz/agent-dry/schemas/tool/v1/tool.schema.json",
+  "$id": "https://github.com/moabualruz/rice-agent/schemas/tool/v1/tool.schema.json",
   "title": "Rice Agent tool manifest v1",
   "type": "object",
   "additionalProperties": false,

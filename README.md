@@ -1,7 +1,7 @@
 # Rice Agent
 
-Private. All rights reserved. This repository is not open source and carries no license grant.
-It evolves the existing `agent-dry` repository and preserves its Git history.
+Released under the MIT License (see `LICENSE`).
+It evolves the earlier `agent-dry` repository (now renamed) and preserves its Git history.
 
 Cross-project tools for coding agents (Claude Code, Codex, Gemini and Antigravity, opencode,
 Cursor, Hermes). Rice Agent keeps the existing verified toolbelt and adds the canonical local
@@ -102,9 +102,8 @@ verified. The GitHub repository rename is a coordinator step after this local mi
 
 ## Planning
 
-Rice Observe effort `rice-agent-v1` in `rice-kb`: [design](rice-kb:docs/research/agent-projects-into-rice-20261028.md),
-tickets under `rice-kb:.scratch/rice-agent-v1/issues/`. Historical implementation work remains in
-`rice-kb:.scratch/agent-dry-v1/` and its accepted spec `rice-kb:docs/specs/agent-dry.md`.
+Planning and tracking run in the maintainer's own Rice Observe instance, which is not public. The `rice-kb:`
+identifiers in tool manifests and docs are references into that tracker; nothing here depends on them.
 
 ## Layout
 

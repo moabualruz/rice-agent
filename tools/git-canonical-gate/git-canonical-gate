@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Promoted from moabualruz/rice-observe 9a9f20236b1ea3aa194271948aecfed8dc1d5870,
-# .githooks/pre-push-gate.sh and .ts. Original private owner rights are retained.
-# Single-entry packaging keeps supported rice-agent vendoring self-contained.
+# Promoted from a pre-push gate hook in the maintainer's Rice Observe repository,
+# (shell and TypeScript). Single-entry packaging keeps supported rice-agent vendoring self-contained.
 set -euo pipefail
 
 case "${1:-}" in
