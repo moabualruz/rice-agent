@@ -174,7 +174,7 @@
       "license": "Apache-2.0",
       "install": "brew install trivy",
       "homepage": "https://trivy.dev",
-      "notes": "trivy fs --scanners vuln,license . for a checkout. The owner runs a shared Trivy server on mkh-pc port 4954; use client mode with --server and take its address from configuration."
+      "notes": "trivy fs --scanners vuln,license . for a checkout."
     },
     {
       "name": "renovate",

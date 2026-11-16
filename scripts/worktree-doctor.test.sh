@@ -46,4 +46,25 @@ fi
 [[ "$output" == *"worktree-doctor: Go module is missing"* ]]
 [[ "$output" == *"restore the checkout's go.mod"* ]]
 
-printf 'worktree-doctor.test: ready and fail-closed pre-push cases passed\n'
+# Without mise, a Node 24.18.0 on PATH is accepted; any other version is refused.
+plain_bin="$root/plain"
+mkdir -p "$plain_bin"
+for command in go just jq shellcheck gitleaks; do ln -s /usr/bin/true "$plain_bin/$command"; done
+for command in git bash dirname; do ln -s "$(command -v "$command")" "$plain_bin/$command"; done
+if PATH="$plain_bin:/usr/bin:/bin" command -v mise >/dev/null 2>&1; then
+  printf "worktree-doctor.test: mise is on the base PATH; skipping the no-mise cases\n"
+else
+  ln -s "$mise_node_dir/bin/node" "$plain_bin/node"
+  output=$(cd "$ready" && PATH="$plain_bin:/usr/bin:/bin" bash .githooks/pre-push)
+  [[ "$output" == "worktree-doctor: checkout and gate prerequisites are ready" ]]
+  rm "$plain_bin/node"
+  printf "#!/usr/bin/env bash\nprintf v22.0.0\\\n" >"$plain_bin/node"
+  chmod +x "$plain_bin/node"
+  if output=$(cd "$ready" && PATH="$plain_bin:/usr/bin:/bin" bash .githooks/pre-push 2>&1); then
+    printf "expected a wrong Node version to be refused\n" >&2
+    exit 1
+  fi
+  [[ "$output" == *"Node 24.18.0 is not active"* ]]
+fi
+
+printf "worktree-doctor.test: ready, no-mise and fail-closed pre-push cases passed\n"

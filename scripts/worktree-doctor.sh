@@ -17,12 +17,22 @@ command -v gitleaks >/dev/null 2>&1 || fail "gitleaks is unavailable" "install g
 command -v bash >/dev/null 2>&1 || fail "Bash is unavailable" "install Bash, then run just ci"
 
 mise_path=$(command -v mise || true)
-[[ -n "$mise_path" ]] || fail "mise is unavailable" "install mise with Node 24.18.0, then run just ci"
-node_dir=$("$mise_path" where node@24.18.0 2>/dev/null) || fail "mise Node 24.18.0 is unavailable" "install Node 24.18.0 through mise, then run just ci"
-node_path="$node_dir/bin/node"
-[[ -x "$node_path" ]] || fail "mise Node 24.18.0 is unavailable" "install Node 24.18.0 through mise, then run just ci"
-node_version=$("$node_path" --version 2>/dev/null) || fail "mise Node 24.18.0 could not run" "repair the mise Node 24.18.0 installation, then run just ci"
-[[ "$node_version" == "v24.18.0" ]] || fail "Node 24.18.0 is not active through mise" "activate Node 24.18.0 through mise, then run just ci"
+node_path=""
+if [[ -n "$mise_path" ]]; then
+  node_dir=$("$mise_path" where node@24.18.0 2>/dev/null || true)
+  [[ -n "$node_dir" && -x "$node_dir/bin/node" ]] && node_path="$node_dir/bin/node"
+fi
+# mise is the preferred source; without it, or in CI, a Node 24.18.0 already on PATH is enough.
+if [[ -z "$node_path" ]]; then
+  if [[ -z "$mise_path" || "${CI:-}" == true ]]; then
+    node_path=$(command -v node || true)
+    [[ -n "$node_path" ]] || fail "Node is unavailable" "install Node 24.18.0 (mise install, or any installer), then run just ci"
+  else
+    fail "mise Node 24.18.0 is unavailable" "run mise install, then run just ci"
+  fi
+fi
+node_version=$("$node_path" --version 2>/dev/null) || fail "Node 24.18.0 could not run" "repair the Node 24.18.0 installation, then run just ci"
+[[ "$node_version" == "v24.18.0" ]] || fail "Node 24.18.0 is not active (found $node_version)" "activate Node 24.18.0 (mise install), then run just ci"
 
 if [[ -f "$root/.gitmodules" ]]; then
   status=$(git -C "$root" submodule status --recursive 2>/dev/null) || fail "submodule state could not be read" "run git submodule update --init --recursive"
