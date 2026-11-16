@@ -8,7 +8,7 @@ CLI; `agent-dry` is a temporary one-release alias to the same implementation.
 
 ## Tracking and planning
 
-- The maintainer tracks work in a private Rice Observe instance (effort `rice-agent-v1`, source `rice-kb`);
+- Maintainer only (outsiders cannot reach it): the maintainer tracks work in a private Rice Observe instance (effort `rice-agent-v1`, source `rice-kb`);
   `rice-kb:` identifiers in manifests and docs point there. Read and write it with Rice MCP tools or
   `rice-client document read|write`.
 - Keep planning, research and status in Rice. This repository holds code, manifests, the policy
@@ -40,4 +40,4 @@ CLI; `agent-dry` is a temporary one-release alias to the same implementation.
 - `gitleaks git --no-banner --redact`
 - CI (`.github/workflows/ci.yml`) runs the guards job (dash and secret checks) and the go job (vet,
   test, build, `rice-agent check --all`) on GitHub-hosted runners (`runs-on: ubuntu-latest`). No workflow may use `pull_request_target`, a
-  secret or a self-hosted runner for pull requests; `scripts/workflows.test.sh` enforces it.
+  secret or a self-hosted runner for pull requests; `internal/ghworkflows` (run by `go test`) enforces it.

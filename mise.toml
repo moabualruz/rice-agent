@@ -1,0 +1,5 @@
+# Toolchain pins for `mise install`. Keep go in step with the go directive in go.mod and node
+# with the version scripts/worktree-doctor.sh and CI expect.
+[tools]
+go = "1.27.1"
+node = "24.18.0"

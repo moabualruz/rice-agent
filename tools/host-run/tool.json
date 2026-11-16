@@ -40,6 +40,6 @@
   "origin": {
     "date": "2026-10-17",
     "builder": "claude-opus-5-5",
-    "task": "rice-kb:.scratch/agent-dry-v1/issues/08-host-run-for-mkh-pc-and-hetzner.md"
+    "task": "agent-dry-v1 issue 08: host-run for ssh to named hosts"
   }
 }

@@ -22,9 +22,11 @@ rice-agent install                     # link Rice Agent and global tools into ~
 rice-agent install --remote hetzner    # hosts without Go get a bundle over SSH
 rice-agent instruction render --source ~/.config/agent-instructions --output ./rendered-instructions
 rice-agent instruction write --plan - < approved-instruction-plan.json
+# Maintainer only: the next three lines need the private Rice Catalog and cannot be reproduced outside it.
 rice-catalog resolve --project P --repository github.com/OWNER/REPO --path . --job J --harness H --preview-context --packet ./catalog-packet.json --json > ./catalog-result.json
 rice-agent instruction render --source ~/.config/agent-instructions --catalog-result ./catalog-result.json --catalog-packet ./catalog-packet.json --output ./catalog-render
 rice-agent instruction check --catalog-export ./catalog-render/compiled/catalog-export.json
+# End of maintainer-only lines.
 just deploy v0.2.3 --dry-run           # release a tag here and to every hosts.<name>.install host
 rice-agent vendor check-no-dashes --into <repo> --as scripts/check-no-dashes.sh
 rice-agent audit --since 14d            # is reuse happening: lookups, reimplementations, copies
